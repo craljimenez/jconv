@@ -132,11 +132,11 @@ def objective(params):
     opt_params = {dim.name: val for dim, val in zip(search_space_dims, params)}
     all_params = {**fixed_params, **opt_params}
 
-    # If base_pos is being optimized, ensure it's a multiple of 2
+    # If base_pos is being optimized, ensure it's a potencie of 2
     if 'base_pos_factor' in all_params:
-        all_params['base_pos'] = all_params.pop('base_pos_factor') ** 2
+        all_params['base_pos'] = 2**all_params.pop('base_pos_factor')
     if 'base_neg_factor' in all_params:
-        all_params['base_neg'] = all_params.pop('base_neg_factor') ** 2
+        all_params['base_neg'] = 2**all_params.pop('base_neg_factor')
 
     # Extract params for this trial
     lr = all_params['lr']
@@ -240,7 +240,7 @@ def main(args):
         arg_val = getattr(args, name)
         if arg_val is not None:
             # Special handling for base_pos if it's fixed
-            if name == 'base_pos':
+            if name in ('base_pos',"base_neg"):
                 if arg_val % 2 != 0:
                     print(f"Warning: Provided --base-pos ({arg_val}) is not a multiple of 2. This is unusual but will be used as a fixed value.")
                 fixed_params['base_pos'] = arg_val
@@ -284,9 +284,12 @@ def main(args):
     # Combine best found params with fixed ones
     best_opt_params = {}
     for dim, val in zip(search_space_dims, result.x):
-        param_name = 'base_pos' if dim.name == 'base_pos_factor' else dim.name
-        param_name = 'base_neg' if dim.name == 'base_neg_factor' else dim.name
-        best_opt_params[param_name] = val ** 2 if dim.name in ('base_pos_factor','base_neg_factor') else val
+        if dim.name == 'base_pos_factor':
+            best_opt_params['base_pos'] = 2**val
+        elif dim.name == 'base_neg_factor':
+            best_opt_params['base_neg'] = 2**val
+        else:
+            best_opt_params[dim.name] = val
     best_params = {**fixed_params, **best_opt_params}
 
     print("\n--- Bayesian Optimization Finished ---")
@@ -298,10 +301,20 @@ def main(args):
         else:
             print(f"  - {name}: {val}")
 
+    # Convert numpy types to native Python types for JSON serialization
+    serializable_best_params = {}
+    for name, val in best_params.items():
+        if isinstance(val, np.integer):
+            serializable_best_params[name] = int(val)
+        elif isinstance(val, np.floating):
+            serializable_best_params[name] = float(val)
+        else:
+            serializable_best_params[name] = val
+
     # Save the best hyperparameters to a JSON file
     best_results_log = {
         'best_mean_iou': -result.fun,
-        'best_hyperparameters': best_params
+        'best_hyperparameters': serializable_best_params
     }
     with open(json_log_filename, 'w') as f:
         json.dump(best_results_log, f, indent=4)
