@@ -186,7 +186,7 @@ def objective(params):
         best_val_iou = -1.0
         # For optimization, we might not need to run for all epochs
         # A smaller number can give a good estimate of the hyperparameter quality
-        num_epochs_per_trial = 5
+        num_epochs_per_trial = 10
 
         for epoch in range(num_epochs_per_trial):
             print(f"\n--- Epoch {epoch+1}/{num_epochs_per_trial} ---")
