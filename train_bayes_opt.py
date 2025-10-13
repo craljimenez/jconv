@@ -145,6 +145,14 @@ def objective(params):
     base_neg = all_params['base_neg']
     batch_size = all_params['batch_size']
 
+    # --- Constraint: base_neg <= base_pos ---
+    # If the condition is not met, we penalize this trial by returning a bad
+    # score (a large positive number, since we minimize -mIoU) without training.
+    if 'base_neg' in all_params and 'base_pos' in all_params and base_neg > base_pos:
+        print(f"\n--- Skipping Bayesian Opt Trial: {trial_num} ---")
+        print(f"Constraint not met: base_neg ({base_neg}) > base_pos ({base_pos}). Penalizing.")
+        return 1.0 # Return a high value to indicate a bad result
+
     print(f"\n--- Bayesian Opt Trial: {trial_num} ---")
     print(f"Params: lr={lr:.6f}, depth={depth}, base_pos={base_pos}, base_neg={base_neg}, batch_size={batch_size}")
 
