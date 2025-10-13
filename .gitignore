@@ -1,0 +1,7 @@
+# Carpetas de archivos de caché y entornos virtuales
+__pycache__/
+.venv/
+data/
+models/
+j_conv_pontryagin_completo_con_anexos.md
+.aiexclude
