@@ -1,4 +1,4 @@
-from Jconv import JConv2d, JBatchNorm2d, JAct, JLift2d, JProject2Euclid
+from Jconv import JConv2d,JConv2dOrtho, JBatchNorm2d, JAct, JLift2d, JProject2Euclid
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
@@ -35,12 +35,14 @@ class JConvBlock(nn.Module):
     """
     (Conv -> BN -> Act) x 2 por rama.
     """
-    def __init__(self, in_pos, in_neg, out_pos, out_neg, k=3, bn=True, act='tanh'):
+    def __init__(self, in_pos, in_neg, out_pos, out_neg, k=3, bn=True, act='tanh', orth=False, mode='out'):
         super().__init__()
-        self.conv1 = JConv2d(in_pos, in_neg, out_pos, out_neg, kernel_size=k, padding=k//2)
+        self.conv1 = JConv2d(in_pos, in_neg, out_pos, out_neg, kernel_size=k, padding=k//2) if not orth\
+                else JConv2dOrtho(in_pos, in_neg, out_pos, out_neg, k=k, p=k//2, bias=False, mode = mode)
         self.bn1   = JBatchNorm2d(out_pos, out_neg) if bn else None
         self.act1  = JAct(act)
-        self.conv2 = JConv2d(out_pos, out_neg, out_pos, out_neg, kernel_size=k, padding=k//2)
+        self.conv2 = JConv2d(out_pos, out_neg, out_pos, out_neg, kernel_size=k, padding=k//2) if not orth\
+                else JConv2dOrtho(out_pos, out_neg, out_pos, out_neg, k=k, p=k//2, bias=False, mode = mode)
         self.bn2   = JBatchNorm2d(out_pos, out_neg) if bn else None
         self.act2  = JAct(act)
 
@@ -55,10 +57,10 @@ class JConvBlock(nn.Module):
 
 # ---------- Downsample (MaxPool) ----------
 class JDown(nn.Module):
-    def __init__(self, in_pos, in_neg, out_pos, out_neg, k=3, bn=True, act='tanh'):
+    def __init__(self, in_pos, in_neg, out_pos, out_neg, k=3, bn=True, act='tanh', orth=False, mode='out'):
         super().__init__()
         self.pool = nn.MaxPool2d(2)
-        self.block = JConvBlock(in_pos, in_neg, out_pos, out_neg, k=k, bn=bn, act=act)
+        self.block = JConvBlock(in_pos, in_neg, out_pos, out_neg, k=k, bn=bn, act=act, orth=orth, mode=mode)
     def forward(self, x_pos, x_neg):
         x_pos = self.pool(x_pos)
         x_neg = self.pool(x_neg)
@@ -66,7 +68,7 @@ class JDown(nn.Module):
 
 # ---------- Upsample (ConvTranspose2d + concat de skip) ----------
 class JUp(nn.Module):
-    def __init__(self, in_pos, in_neg, skip_pos, skip_neg, out_pos, out_neg, k=3, bn=True, act='tanh', bilinear=False):
+    def __init__(self, in_pos, in_neg, skip_pos, skip_neg, out_pos, out_neg, k=3, bn=True, act='tanh', bilinear=False, orth=False, mode='out'):
         super().__init__()
         if bilinear:
             self.up_pos = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
@@ -82,7 +84,7 @@ class JUp(nn.Module):
             in_neg_eff = in_neg//2 + skip_neg
             self.reduce_pos = None
             self.reduce_neg = None
-        self.block = JConvBlock(in_pos_eff, in_neg_eff, out_pos, out_neg, k=k, bn=bn, act=act)
+        self.block = JConvBlock(in_pos_eff, in_neg_eff, out_pos, out_neg, k=k, bn=bn, act=act, orth=orth, mode=mode)
 
     def forward(self, x_pos, x_neg, skip_pos, skip_neg):
         x_pos = self.up_pos(x_pos)
@@ -113,7 +115,7 @@ class UNetHybridJEnc(nn.Module):
     U-Net híbrida: Encoder en Pontryagin, proyección a Euclídeo, Decoder normal.
     """
     def __init__(self, in_ch=3, base_pos=32, base_neg=8, depth=4, 
-                 proj_mode='sub', dec_base=64, n_classes=2, k=3, bn=True, act='tanh'):
+                 proj_mode='sub', dec_base=64, n_classes=2, k=3, bn=True, act='tanh', orth=False, mode='out'):
         super().__init__()
         # Encoder J
         self.lift = JLift2d(in_ch, base_pos, base_neg)
@@ -123,9 +125,9 @@ class UNetHybridJEnc(nn.Module):
             outp = chp*2 if d>0 else chp
             outn = chn*2 if d>0 else chn
             if d == 0:
-                enc.append(JConvBlock(chp, chn, outp, outn, k=k, bn=bn, act=act))
+                enc.append(JConvBlock(chp, chn, outp, outn, k=k, bn=bn, act=act, orth=orth, mode=mode)) # type: ignore
             else:
-                enc.append(JDown(chp, chn, outp, outn, k=k, bn=bn, act=act))
+                enc.append(JDown(chp, chn, outp, outn, k=k, bn=bn, act=act, orth=orth, mode=mode)) # type: ignore
             chp, chn = outp, outn
         self.encoder = enc
 
@@ -162,9 +164,11 @@ class UNetHybridJEnc(nn.Module):
             self.dec_convs.append(
                 nn.Sequential(
                     nn.Conv2d(ch_up + skip_ch, ch_up, 3, padding=1),
-                    nn.BatchNorm2d(ch_up), nn.ReLU(inplace=True),
+                    nn.BatchNorm2d(ch_up),
+                    nn.ReLU(inplace=True),
                     nn.Conv2d(ch_up, ch_up, 3, padding=1),
-                    nn.BatchNorm2d(ch_up), nn.ReLU(inplace=True),
+                    nn.BatchNorm2d(ch_up),
+                    nn.ReLU(inplace=True),
                 )
             )
             ch = ch_up
@@ -199,13 +203,13 @@ class UNetHybridJEnc(nn.Module):
         return upsample(logits)
 
 def build_unet_hybrid_jenc(in_ch=3, base_pos=32, base_neg=8, depth=4,
-                           proj_mode='sub', dec_base=64, n_classes=2, k=3, bn=True, act='tanh'):
+                           proj_mode='sub', dec_base=64, n_classes=2, k=3, bn=True, act='tanh', orth=False, mode='out'):
     """
     Construye U-Net híbrida: encoder J, decoder euclídeo.
     - proj_mode: 'sub' (Y=pos-neg) o 'concat' (mezcla aprendida 1x1)
     - dec_base: canales euclídeos en el bottleneck del decoder
     """
-    return UNetHybridJEnc(in_ch, base_pos, base_neg, depth, proj_mode, dec_base, n_classes, k, bn, act)
+    return UNetHybridJEnc(in_ch, base_pos, base_neg, depth, proj_mode, dec_base, n_classes, k, bn, act, orth, mode)
 
 #**********************************************************
 # FCN-Híbrida con Encoder J y Decoder simple (bilinear)

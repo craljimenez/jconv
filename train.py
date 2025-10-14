@@ -128,12 +128,14 @@ def main(args):
         model = build_unet(in_ch=3, n_classes=n_classes, base_ch=args.base_pos, depth=args.depth, bilinear=True)
     elif args.model == 'unet_hybrid':
         print(f"Building UNet-Hybrid model with base_pos={args.base_pos} and base_neg={args.base_neg}...")
+        print(f"\t Using activation='{args.activation}' and orth={args.orth}")
         model = build_unet_hybrid_jenc(in_ch=3,
                                        n_classes=n_classes,
                                        base_pos=args.base_pos,
                                        base_neg=args.base_neg,
                                        depth=args.depth,
-                                       act=args.activation
+                                       act=args.activation,
+                                       orth=args.orth
                                        )
     elif args.model == 'fcn':
         print("Building standard FCN model...")
@@ -239,6 +241,7 @@ if __name__ == '__main__':
                         help="Negative channels for J-Conv encoder (only for unet_hybrid).")
     parser.add_argument('--activation',type=str,default="tanh",choices=['tanh','gelu','leaky_relu'],
                         help="Activation function to use in JCONV Blocks")
-
+    parser.add_argument('--orth', action='store_true',
+                        help="Use orthogonal J-Conv layers (JConv2dOrtho) instead of standard J-Conv layers.")
     args = parser.parse_args()
     main(args)
