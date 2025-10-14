@@ -79,7 +79,7 @@ def main(args):
 
     # --- Load hyperparameters from JSON if specified ---
     if args.from_best_params:
-        json_path = f'best_hyperparameters_{args.from_best_params}.json'
+        json_path = f'{args.from_best_params}'
         print(f"Loading best hyperparameters from '{json_path}'...")
         try:
             with open(json_path, 'r') as f:
@@ -128,13 +128,25 @@ def main(args):
         model = build_unet(in_ch=3, n_classes=n_classes, base_ch=args.base_pos, depth=args.depth, bilinear=True)
     elif args.model == 'unet_hybrid':
         print(f"Building UNet-Hybrid model with base_pos={args.base_pos} and base_neg={args.base_neg}...")
-        model = build_unet_hybrid_jenc(in_ch=3, n_classes=n_classes, base_pos=args.base_pos, base_neg=args.base_neg, depth=args.depth)
+        model = build_unet_hybrid_jenc(in_ch=3,
+                                       n_classes=n_classes,
+                                       base_pos=args.base_pos,
+                                       base_neg=args.base_neg,
+                                       depth=args.depth,
+                                       act=args.activation
+                                       )
     elif args.model == 'fcn':
         print("Building standard FCN model...")
         model = build_fcn(in_ch=3, n_classes=n_classes, base_ch=args.base_pos, stages=args.depth)
     elif args.model == 'fcn_hybrid':
         print(f"Building FCN-Hybrid model with base_pos={args.base_pos} and base_neg={args.base_neg}...")
-        model = build_fcn_hybrid_jenc(in_ch=3, n_classes=n_classes, base_pos=args.base_pos, base_neg=args.base_neg, stages=args.depth)
+        model = build_fcn_hybrid_jenc(in_ch=3,
+                                      n_classes=n_classes,
+                                      base_pos=args.base_pos,
+                                      base_neg=args.base_neg,
+                                      stages=args.depth,
+                                      act=args.activation
+                                      )
     else:
         raise ValueError(f"Unknown model type: '{args.model}'")
 
@@ -208,7 +220,7 @@ if __name__ == '__main__':
     parser.add_argument('--model', type=str, default='unet_hybrid', choices=['unet', 'unet_hybrid', 'fcn', 'fcn_hybrid'],
                         help="Model to train ('unet', 'unet_hybrid', 'fcn', 'fcn_hybrid').")
     parser.add_argument('--from-best-params', type=str, default=None,
-                        help="Load hyperparameters from the JSON file for the specified model (e.g., 'unet_hybrid'). Overrides other hyperparameter flags.")
+                        help="Load hyperparameters from the JSON file for the specified model")
     parser.add_argument('--epochs', type=int, default=25,
                         help="Number of training epochs.")
     parser.add_argument('--batch-size', type=int, default=8,
@@ -225,6 +237,8 @@ if __name__ == '__main__':
                         help="Positive channels for J-Conv encoder (only for unet_hybrid).")
     parser.add_argument('--base-neg', type=int, default=8,
                         help="Negative channels for J-Conv encoder (only for unet_hybrid).")
+    parser.add_argument('--activation',type=str,default="tanh",choices=['tanh','gelu','leaky_relu'],
+                        help="Activation function to use in JCONV Blocks")
 
     args = parser.parse_args()
     main(args)

@@ -5,3 +5,5 @@ data/
 models/
 j_conv_pontryagin_completo_con_anexos.md
 .aiexclude
+bayes*
+best*

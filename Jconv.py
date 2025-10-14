@@ -182,3 +182,93 @@ class JAct(nn.Module):
             raise ValueError("kind debe ser 'tanh' | 'gelu' | 'leaky_relu'")
     def forward(self, x_pos, x_neg):
         return self.act(x_pos), self.act(x_neg)
+
+# =====================================================
+# 5JconvOrth: Convolución ortogonal en Pontryagin
+# =====================================================
+
+def householder_chain(vs):
+    """
+    Construye una matriz ortogonal R = H_m ... H_2 H_1 a partir de m vectores columna.
+    Cada H(v) = I - 2 (v v^T)/(v^T v). Devuelve R (n x n).
+    vs: (n, m) con m reflectores; si m=0 -> I
+    """
+    n, m = vs.shape
+    R = torch.eye(n, device=vs.device, dtype=vs.dtype)
+    for j in range(m):
+        v = vs[:, j:j+1]  # (n,1)
+        denom = torch.clamp(v.t() @ v, min=1e-12)  # estabilidad
+        H = torch.eye(n, device=vs.device, dtype=vs.dtype) - 2.0 * (v @ v.t()) / denom
+        R = H @ R
+    return R
+
+class JConv2dOrtho(nn.Module):
+    """
+    Convolución 2D indefinida con atado ortogonal entre ramas:
+        y_pos = conv(x_pos, W_pos)
+        y_neg = conv(x_neg, W_neg),   con   W_neg = R * W_pos
+    Modo de atado:
+      - mode='in':    R actúa sobre C_in (requiere in_pos == in_neg)
+      - mode='out':   R actúa sobre C_out (requiere out_pos == out_neg)
+      - mode='output': y_neg = R_out(y_pos) (mezcla ortogonal post-conv)
+
+    Parametrización ortogonal: cadena de reflectores de Householder (estable y sin inversas).
+    num_reflectors controla capacidad (p.ej., 1–4 suele bastar).
+    """
+    def __init__(self, in_pos, in_neg, out_pos, out_neg, k=3, s=1, p=1, bias=True,
+                 mode='in', num_reflectors=2):
+        super().__init__()
+        assert mode in {'in', 'out', 'output'}
+        self.mode = mode
+        self.conv_pos = nn.Conv2d(in_pos, out_pos, kernel_size=k, stride=s, padding=p, bias=bias)
+
+        if mode == 'in':
+            assert in_pos == in_neg, "Para mode='in' se requiere in_pos == in_neg (R cuadrada)."
+            self.in_neg = in_neg
+            # Parametrizamos R_in con m reflectores sobre R^{C_in}
+            self.R_param = nn.Parameter(torch.randn(in_pos, num_reflectors) * 0.01)
+        elif mode == 'out':
+            assert out_pos == out_neg, "Para mode='out' se requiere out_pos == out_neg (R cuadrada)."
+            self.out_neg = out_neg
+            self.R_param = nn.Parameter(torch.randn(out_pos, num_reflectors) * 0.01)
+        else:  # mode == 'output'
+            assert out_pos == out_neg, "Para mode='output' se requiere out_pos == out_neg."
+            self.mix = None  # R se construye on-the-fly sobre C_out
+            self.R_param = nn.Parameter(torch.randn(out_pos, num_reflectors) * 0.01)
+
+    def forward(self, x_pos, x_neg):
+        y_pos = self.conv_pos(x_pos)
+
+        if self.mode == 'output':
+            # y_neg = R_out y_pos  (mezcla ortogonal de canales de salida)
+            B, C, H, W = y_pos.shape
+            R = householder_chain(self.R_param)  # (C,C)
+            y_pos_flat = y_pos.flatten(2)        # (B,C,H*W)
+            y_neg_flat = R @ y_pos_flat          # (B,C,H*W) con broadcast implícito si reordenamos
+            y_neg = y_neg_flat.view(B, C, H, W)
+            return y_pos, y_neg
+
+        # Para 'in' y 'out' debemos construir W_neg a partir de W_pos
+        Wp = self.conv_pos.weight  # (out_pos, in_pos, k, k)
+        bp = self.conv_pos.bias
+
+        if self.mode == 'in':
+            # R_in actúa sobre eje C_in y preserva kxk
+            Cin = Wp.shape[1]
+            R = householder_chain(self.R_param)   # (Cin,Cin)
+            Wp_mat = Wp.view(Wp.shape[0], Cin, -1)             # (Cout, Cin, k^2)
+            Wn_mat = torch.einsum('ij,ocj->oci', R, Wp_mat)    # (Cout, Cin, k^2)
+            Wn = Wn_mat.view_as(Wp)                            # (Cout, Cin, k, k)
+        else:  # mode == 'out'
+            # R_out actúa sobre eje C_out
+            Cout = Wp.shape[0]
+            R = householder_chain(self.R_param)   # (Cout,Cout)
+            Wp_mat = Wp.view(Cout, -1)                          # (Cout, Cin*k^2)
+            Wn_mat = R @ Wp_mat                                 # (Cout, Cin*k^2)
+            Wn = Wn_mat.view_as(Wp)
+
+        # y_neg = conv(x_neg, W_neg) (sin bias para simetría; opcional añadir bias propio)
+        y_neg = F.conv2d(x_neg, Wn, bias=None, stride=self.conv_pos.stride,
+                         padding=self.conv_pos.padding, dilation=self.conv_pos.dilation,
+                         groups=self.conv_pos.groups)
+        return y_pos, y_neg

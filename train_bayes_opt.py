@@ -12,7 +12,7 @@ import os
 import csv
 from skopt import gp_minimize
 from skopt.plots import plot_objective, plot_evaluations
-from skopt.space import Real, Integer
+from skopt.space import Real, Integer,Categorical
 from skopt.utils import use_named_args
 
 from utils import build_unet, build_unet_hybrid_jenc, build_fcn, build_fcn_hybrid_jenc, dice_score, iou_score
@@ -142,9 +142,10 @@ def objective(params):
     lr = all_params['lr']
     depth = all_params['depth']
     base_pos = all_params['base_pos']
-    base_neg = all_params['base_neg']
+    base_neg = all_params['base_neg'] if args.model in ('unet_hybrid', 'fcn_hybrid') else None
     batch_size = all_params['batch_size']
-
+    activation = all_params.get('activation', 'tanh')
+    num_epochs_per_trial = args.num_epochs_per_trial
     # --- Constraint: base_neg <= base_pos ---
     # If the condition is not met, we penalize this trial by returning a bad
     # score (a large positive number, since we minimize -mIoU) without training.
@@ -154,7 +155,7 @@ def objective(params):
         return 1.0 # Return a high value to indicate a bad result
 
     print(f"\n--- Bayesian Opt Trial: {trial_num} ---")
-    print(f"Params: lr={lr:.6f}, depth={depth}, base_pos={base_pos}, base_neg={base_neg}, batch_size={batch_size}")
+    print(f"Params: lr={lr:.6f}, depth={depth}, base_pos={base_pos}, base_neg={base_neg}, batch_size={batch_size}, activation={activation}")
 
     device = get_device()
 
@@ -174,13 +175,25 @@ def objective(params):
             model = build_unet(in_ch=3, n_classes=n_classes, base_ch=base_pos, depth=depth, bilinear=True)
         elif args.model == 'unet_hybrid':
             print(f"Building UNet-Hybrid model with base_pos={base_pos} and base_neg={base_neg}...")
-            model = build_unet_hybrid_jenc(in_ch=3, n_classes=n_classes, base_pos=base_pos, base_neg=base_neg, depth=depth)
+            model = build_unet_hybrid_jenc(in_ch=3,
+                                           n_classes=n_classes,
+                                           base_pos=base_pos,
+                                           base_neg=base_neg,
+                                           depth=depth,
+                                           act=activation
+                                           )
         elif args.model == 'fcn':
             print(f"Building standard FCN model with base_ch={base_pos}...")
             model = build_fcn(in_ch=3, n_classes=n_classes, base_ch=base_pos, stages=depth)
         elif args.model == 'fcn_hybrid':
             print(f"Building FCN-Hybrid model with base_pos={base_pos} and base_neg={base_neg}...")
-            model = build_fcn_hybrid_jenc(in_ch=3, n_classes=n_classes, base_pos=base_pos, base_neg=base_neg, stages=depth)
+            model = build_fcn_hybrid_jenc(in_ch=3,
+                                          n_classes=n_classes,
+                                          base_pos=base_pos,
+                                          base_neg=base_neg,
+                                          stages=depth,
+                                          act=activation
+                                          )
         else:
             raise ValueError(f"Unknown model type: '{args.model}'")
 
@@ -192,9 +205,6 @@ def objective(params):
 
         # --- Training Loop ---
         best_val_iou = -1.0
-        # For optimization, we might not need to run for all epochs
-        # A smaller number can give a good estimate of the hyperparameter quality
-        num_epochs_per_trial = 10
 
         for epoch in range(num_epochs_per_trial):
             print(f"\n--- Epoch {epoch+1}/{num_epochs_per_trial} ---")
@@ -236,13 +246,22 @@ def main(args):
     json_log_filename = f'best_hyperparameters_{args.model}.json'
 
     # --- Define full search space and identify fixed vs. optimized params ---
-    full_search_space = {
-        'lr': Real(1e-5, 1e-3, prior='log-uniform', name='lr'),
-        'depth': Integer(3, 5, name='depth'),
-        'base_pos': Integer(2, 7, name='base_pos_factor'), # Will be multiplied by 2
-        'base_neg': Integer(2, 7, name='base_neg_factor'),
-        'batch_size': Integer(4, 16, name='batch_size')
-    }
+    if args.model in ("unet_hybrid", "fcn_hybrid"):
+        full_search_space = {
+            'lr': Real(1e-5, 1e-3, prior='log-uniform', name='lr'),
+            'depth': Integer(3, 5, name='depth'),
+            'base_pos': Integer(2, 7, name='base_pos_factor'), # Will be multiplied by 2
+            'base_neg': Integer(2, 7, name='base_neg_factor'),
+            'batch_size': Integer(4, 16, name='batch_size'),
+            'activation': Categorical(['tanh','gelu','leaky_relu'],name='activation')
+        }
+    else:
+        full_search_space = {
+            'lr': Real(1e-5, 1e-3, prior='log-uniform', name='lr'),
+            'depth': Integer(3, 5, name='depth'),
+            'base_pos': Integer(2, 7, name='base_pos_factor'), # Will be multiplied by 2
+            'batch_size': Integer(4, 16, name='batch_size'),
+        }
 
     for name, space in full_search_space.items():
         arg_val = getattr(args, name)
@@ -368,6 +387,9 @@ if __name__ == '__main__':
                         help="Size to resize input images to.")
     parser.add_argument('--gpu-mem-fraction', type=float, default=None,
                         help="Fraction of GPU memory to use (e.g., 0.8 for 80%). Only for CUDA devices.")
-
+    parser.add_argument('--activation',type=str,default=None,choices=['tanh','gelu','leaky_relu'],
+                        help="Activation function to use in JCONV Blocks")
+    parser.add_argument('--num-epochs-per-trial', type=int, default=10,
+                        help="Number of epochs to train per trial. A smaller number can give a good estimate of the hyperparameter quality")
     args = parser.parse_args()
     main(args)
