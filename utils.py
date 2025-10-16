@@ -209,7 +209,9 @@ def build_unet_hybrid_jenc(in_ch=3, base_pos=32, base_neg=8, depth=4,
     - proj_mode: 'sub' (Y=pos-neg) o 'concat' (mezcla aprendida 1x1)
     - dec_base: canales euclídeos en el bottleneck del decoder
     """
-    return UNetHybridJEnc(in_ch, base_pos, base_neg, depth, proj_mode, dec_base, n_classes, k, bn, act, orth, mode)
+    return UNetHybridJEnc(in_ch, base_pos, base_neg, depth, proj_mode, dec_base, n_classes, k, bn, act, orth, mode)\
+                if not orth \
+                    else UNetHybridJEnc(in_ch, base_pos, base_pos, depth, proj_mode, dec_base, n_classes, k, bn, act, orth, mode)
 
 #**********************************************************
 # FCN-Híbrida con Encoder J y Decoder simple (bilinear)

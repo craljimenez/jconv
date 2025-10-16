@@ -142,9 +142,11 @@ def objective(params):
     lr = all_params['lr']
     depth = all_params['depth']
     base_pos = all_params['base_pos']
-    base_neg = all_params['base_neg'] if args.model in ('unet_hybrid', 'fcn_hybrid') else None
+    base_neg = all_params.get('base_neg', None) if args.model in ('unet_hybrid', 'fcn_hybrid') and not args.orth else None
     batch_size = all_params['batch_size']
     activation = all_params.get('activation', 'tanh')
+    orth = args.orth
+    mode = all_params.get('mode','out')
     num_epochs_per_trial = args.num_epochs_per_trial
     # --- Constraint: base_neg <= base_pos ---
     # If the condition is not met, we penalize this trial by returning a bad
@@ -155,7 +157,7 @@ def objective(params):
         return 1.0 # Return a high value to indicate a bad result
 
     print(f"\n--- Bayesian Opt Trial: {trial_num} ---")
-    print(f"Params: lr={lr:.6f}, depth={depth}, base_pos={base_pos}, base_neg={base_neg}, batch_size={batch_size}, activation={activation}")
+    print(f"Params: lr={lr:.6f}, depth={depth}, base_pos={base_pos}, base_neg={base_neg}, batch_size={batch_size}, activation={activation}, oth={orth}, mode={mode}")
 
     device = get_device()
 
@@ -173,14 +175,27 @@ def objective(params):
         if args.model == 'unet':
             print(f"Building standard UNet model with base_ch={base_pos}...")
             model = build_unet(in_ch=3, n_classes=n_classes, base_ch=base_pos, depth=depth, bilinear=True)
-        elif args.model == 'unet_hybrid':
+        elif args.model == 'unet_hybrid' and not orth:
             print(f"Building UNet-Hybrid model with base_pos={base_pos} and base_neg={base_neg}...")
             model = build_unet_hybrid_jenc(in_ch=3,
                                            n_classes=n_classes,
                                            base_pos=base_pos,
                                            base_neg=base_neg,
                                            depth=depth,
-                                           act=activation
+                                           act=activation,
+                                           orth=orth,
+                                           mode=mode
+                                           )
+        elif args.model == 'unet_hybrid':
+            print(f"Building UNet-Hybrid model with base_pos={base_pos} and base_neg={base_neg}...")
+            model = build_unet_hybrid_jenc(in_ch=3,
+                                           n_classes=n_classes,
+                                           base_pos=base_pos,
+                                           base_neg=base_pos,
+                                           depth=depth,
+                                           act=activation,
+                                           orth=orth,
+                                           mode=mode
                                            )
         elif args.model == 'fcn':
             print(f"Building standard FCN model with base_ch={base_pos}...")
@@ -246,12 +261,22 @@ def main(args):
     json_log_filename = f'best_hyperparameters_{args.model}.json'
 
     # --- Define full search space and identify fixed vs. optimized params ---
-    if args.model in ("unet_hybrid", "fcn_hybrid"):
+    if args.model in ("unet_hybrid", "fcn_hybrid") and not args.orth:
         full_search_space = {
             'lr': Real(1e-5, 1e-3, prior='log-uniform', name='lr'),
             'depth': Integer(3, 5, name='depth'),
             'base_pos': Integer(2, 7, name='base_pos_factor'), # Will be multiplied by 2
             'base_neg': Integer(2, 7, name='base_neg_factor'),
+            'batch_size': Integer(4, 16, name='batch_size'),
+            'activation': Categorical(['tanh','gelu','leaky_relu'],name='activation'),
+            'mode': Categorical(['out','in',"output"],name='mode')
+        }
+    elif args.model in ("unet_hybrid", "fcn_hybrid"):
+        full_search_space = {
+            'lr': Real(1e-5, 1e-3, prior='log-uniform', name='lr'),
+            'depth': Integer(3, 5, name='depth'),
+            'base_pos': Integer(2, 7, name='base_pos_factor'), # Will be multiplied by 2
+            # 'base_neg': Integer(2, 7, name='base_neg_factor'),
             'batch_size': Integer(4, 16, name='batch_size'),
             'activation': Categorical(['tanh','gelu','leaky_relu'],name='activation')
         }
@@ -391,5 +416,7 @@ if __name__ == '__main__':
                         help="Activation function to use in JCONV Blocks")
     parser.add_argument('--num-epochs-per-trial', type=int, default=10,
                         help="Number of epochs to train per trial. A smaller number can give a good estimate of the hyperparameter quality")
+    parser.add_argument('--orth',action='store_true',
+                        help="Use JConv2dOrth instead of JConv2d")
     args = parser.parse_args()
     main(args)

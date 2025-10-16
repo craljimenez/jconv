@@ -92,7 +92,7 @@ def main(args):
                     setattr(args, key, value)
             
             # The model name should match the one from the file
-            args.model = args.from_best_params
+            
 
             print("Successfully loaded and applied the following hyperparameters:")
             for key, value in loaded_params.items():
