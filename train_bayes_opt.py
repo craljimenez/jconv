@@ -306,14 +306,14 @@ def objective(params):
             base_pos = all_params['base_pos']
             base_neg = None
             if args.model in ('unet_hybrid', 'fcn_hybrid'):
-                base_neg = all_params.get('base_neg', args.base_neg)
+                base_neg = all_params.get('base_neg', None)
                 if orth:
                     base_neg = base_pos
                 if base_neg is not None and base_neg > base_pos:
                     print(f"Constraint not met: base_neg ({base_neg}) > base_pos ({base_pos}). Penalizing.")
                     return 1.0
 
-            mode = all_params.get('mode', 'out')
+            mode = all_params.get('mode', None)
             print(
                 f"Params: lr={lr:.6f}, depth={depth}, base_pos={base_pos}, base_neg={base_neg}, "
                 f"batch_size={batch_size}, activation={activation}, orth={orth}, mode={mode}"
@@ -699,6 +699,13 @@ if __name__ == '__main__':
         type=int,
         default=7,
         help="Adaptive average pooling output size for JVGG classifiers.",
+    )
+    parser.add_argument(
+        '--mode',
+        type=str,
+        default=None,
+        choices=['in', 'out', 'output'],
+        help="Orthogonal mode for JConv2dOrtho. If not set, it will be optimized.",
     )
     args = parser.parse_args()
     main(args)
