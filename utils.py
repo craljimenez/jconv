@@ -108,7 +108,201 @@ class JClassifier1x1(nn.Module):
         self.head_neg = nn.Conv2d(in_neg, n_classes, kernel_size=1, bias=False)
     def forward(self, x_pos, x_neg):
         return self.head_pos(x_pos) - self.head_neg(x_neg)
+
+
+# ---------- Clasificadores tipo VGG con J-Conv ----------
+class JConvLayer(nn.Module):
+    """
+    Bloque elemental: una J-Conv + BN opcional + activación.
+    """
+    def __init__(self, in_pos, in_neg, out_pos, out_neg, k=3, bn=True,
+                 act='tanh', orth=False, mode='out', bias=True):
+        super().__init__()
+        padding = k // 2
+        if orth:
+            self.conv = JConv2dOrtho(in_pos, in_neg, out_pos, out_neg,
+                                     k=k, s=1, p=padding, bias=bias, mode=mode)
+        else:
+            self.conv = JConv2d(in_pos, in_neg, out_pos, out_neg,
+                                kernel_size=k, stride=1, padding=padding, bias=bias)
+        self.bn = JBatchNorm2d(out_pos, out_neg) if bn else None
+        self.act = JAct(act) if act else None
+
+    def forward(self, x_pos, x_neg):
+        y_pos, y_neg = self.conv(x_pos, x_neg)
+        if self.bn is not None:
+            y_pos, y_neg = self.bn(y_pos, y_neg)
+        if self.act is not None:
+            y_pos, y_neg = self.act(y_pos, y_neg)
+        return y_pos, y_neg
+
+
+class JVGGStage(nn.Module):
+    """
+    Agrupa varias J-Conv consecutivas y aplica max-pool al final.
+    """
+    def __init__(self, in_pos, in_neg, out_pos, out_neg, n_layers,
+                 k=3, bn=True, act='tanh', orth=False, mode='out',
+                 pool_kernel=2, pool_stride=2, apply_pool=True):
+        super().__init__()
+        layers = []
+        cur_pos, cur_neg = in_pos, in_neg
+        for _ in range(n_layers):
+            layers.append(
+                JConvLayer(cur_pos, cur_neg, out_pos, out_neg,
+                           k=k, bn=bn, act=act, orth=orth, mode=mode)
+            )
+            cur_pos, cur_neg = out_pos, out_neg
+        self.layers = nn.ModuleList(layers)
+        self.pool = nn.MaxPool2d(kernel_size=pool_kernel, stride=pool_stride) if apply_pool else None
+
+    def forward(self, x_pos, x_neg):
+        for layer in self.layers:
+            x_pos, x_neg = layer(x_pos, x_neg)
+        if self.pool is not None:
+            x_pos = self.pool(x_pos)
+            x_neg = self.pool(x_neg)
+        return x_pos, x_neg
+
+
+class JVGG(nn.Module):
+    """
+    Clasificador estilo VGG con convoluciones indefinidas (JConv).
+    """
+    def __init__(self, in_ch=3, base_pos=32, base_neg=8,
+                 stage_layers=(2, 2, 4, 4, 4),
+                 channel_multipliers=(1, 2, 4, 8, 8),
+                 n_classes=1000, k=3, bn=True, act='tanh',
+                 orth=False, mode='out', proj_mode='sub',
+                 proj_out_ch=None, avgpool_size=7,
+                 classifier_dims=(4096, 4096), dropout=0.5):
+        super().__init__()
+
+        if len(stage_layers) != len(channel_multipliers):
+            raise ValueError("stage_layers y channel_multipliers deben tener la misma longitud.")
+
+        self.lift = JLift2d(in_ch, base_pos, base_neg)
+
+        stages = []
+        cur_pos, cur_neg = base_pos, base_neg
+        for n_layers, mult in zip(stage_layers, channel_multipliers):
+            out_pos = base_pos * mult
+            out_neg = base_neg * mult
+            stages.append(
+                JVGGStage(cur_pos, cur_neg, out_pos, out_neg, n_layers,
+                          k=k, bn=bn, act=act, orth=orth, mode=mode)
+            )
+            cur_pos, cur_neg = out_pos, out_neg
+        self.stages = nn.ModuleList(stages)
+
+        proj_channels = proj_out_ch if proj_out_ch is not None else cur_pos
+        self.project = JProject2Euclid(cur_pos, cur_neg, out_ch=proj_channels, mode=proj_mode)
+        self.avgpool = nn.AdaptiveAvgPool2d((avgpool_size, avgpool_size))
+
+        classifier_layers = []
+        in_features = proj_channels * avgpool_size * avgpool_size
+        for hidden in classifier_dims:
+            classifier_layers.append(nn.Linear(in_features, hidden))
+            classifier_layers.append(nn.ReLU(inplace=True))
+            classifier_layers.append(nn.Dropout(p=dropout))
+            in_features = hidden
+        classifier_layers.append(nn.Linear(in_features, n_classes))
+        self.classifier = nn.Sequential(*classifier_layers)
+
+    def forward(self, x):
+        x_pos, x_neg = self.lift(x)
+        for stage in self.stages:
+            x_pos, x_neg = stage(x_pos, x_neg)
+        feats = self.project(x_pos, x_neg)
+        feats = self.avgpool(feats)
+        feats = torch.flatten(feats, 1)
+        return self.classifier(feats)
+
+
+def build_jvgg19(in_ch=3, base_pos=32, base_neg=8, n_classes=1000,
+                 k=3, bn=True, act='tanh', orth=False, mode='out',
+                 proj_mode='sub', proj_out_ch=None, avgpool_size=7,
+                 classifier_dims=(4096, 4096), dropout=0.5):
+    """
+    Construye un clasificador JVGG con configuración equivalente a VGG19.
+    stage_layers = (2, 2, 4, 4, 4) -> 16 conv + 3 capas densas.
+    """
+    eff_base_neg = base_pos if orth else base_neg
+    return JVGG(
+        in_ch=in_ch,
+        base_pos=base_pos,
+        base_neg=eff_base_neg,
+        stage_layers=(2, 2, 4, 4, 4),
+        channel_multipliers=(1, 2, 4, 8, 8),
+        n_classes=n_classes,
+        k=k,
+        bn=bn,
+        act=act,
+        orth=orth,
+        mode=mode,
+        proj_mode=proj_mode,
+        proj_out_ch=proj_out_ch,
+        avgpool_size=avgpool_size,
+        classifier_dims=classifier_dims,
+        dropout=dropout,
+    )
+
+
+def build_jvgg21(in_ch=3, base_pos=32, base_neg=8, n_classes=1000,
+                 k=3, bn=True, act='tanh', orth=False, mode='out',
+                 proj_mode='sub', proj_out_ch=None, avgpool_size=7,
+                 classifier_dims=(4096, 4096), dropout=0.5):
+    """
+    Construye un clasificador JVGG con configuración extendida (tipo VGG21).
+    stage_layers = (2, 2, 4, 4, 6) -> 18 conv + 3 capas densas.
+    """
+    eff_base_neg = base_pos if orth else base_neg
+    return JVGG(
+        in_ch=in_ch,
+        base_pos=base_pos,
+        base_neg=eff_base_neg,
+        stage_layers=(2, 2, 4, 4, 6),
+        channel_multipliers=(1, 2, 4, 8, 8),
+        n_classes=n_classes,
+        k=k,
+        bn=bn,
+        act=act,
+        orth=orth,
+        mode=mode,
+        proj_mode=proj_mode,
+        proj_out_ch=proj_out_ch,
+        avgpool_size=avgpool_size,
+        classifier_dims=classifier_dims,
+        dropout=dropout,
+    )
     
+def build_jvgg16(in_ch=3, base_pos=32, base_neg=8, n_classes=1000,
+                 k=3, bn=True, act='tanh', orth=False, mode='out',
+                 proj_mode='sub', proj_out_ch=None, avgpool_size=7,
+                 classifier_dims=(4096, 4096), dropout=0.5):
+    """
+    Construye un clasificador JVGG con configuración equivalente a VGG16.
+    stage_layers = (2, 2, 3, 3, 3) -> 13 conv + 3 capas densas.
+    """
+    eff_base_neg = base_pos if orth else base_neg
+    return JVGG(
+        in_ch=in_ch,
+        base_pos=base_pos,
+        base_neg=eff_base_neg,
+        stage_layers=(2, 2, 3, 3, 3),
+        channel_multipliers=(1, 2, 4, 8, 8),
+        n_classes=n_classes,
+        k=k,
+        bn=bn,
+        act=act,
+        orth=orth,
+        mode=mode,
+        proj_mode=proj_mode,
+        proj_out_ch=proj_out_ch,
+        avgpool_size=avgpool_size,
+        classifier_dims=classifier_dims,
+        dropout=dropout,
+    )
 
 class UNetHybridJEnc(nn.Module):
     """
