@@ -431,8 +431,8 @@ def main(args):
         full_search_space = {
             'lr': Real(1e-5, 1e-3, prior='log-uniform', name='lr'),
             'depth': Integer(3, 5, name='depth'),
-            'base_pos': Integer(2, 7, name='base_pos_factor'),
-            'base_neg': Integer(2, 7, name='base_neg_factor'),
+            'base_pos': Integer(2, 5, name='base_pos_factor'),
+            'base_neg': Integer(2, 4, name='base_neg_factor'),
             'batch_size': Integer(4, 16, name='batch_size'),
             'activation': Categorical(['tanh', 'gelu', 'leaky_relu'], name='activation'),
             'mode': Categorical(['out', 'in', 'output'], name='mode'),
@@ -441,15 +441,15 @@ def main(args):
         full_search_space = {
             'lr': Real(1e-5, 1e-3, prior='log-uniform', name='lr'),
             'depth': Integer(3, 5, name='depth'),
-            'base_pos': Integer(2, 7, name='base_pos_factor'),
+            'base_pos': Integer(2, 5, name='base_pos_factor'),
             'batch_size': Integer(4, 16, name='batch_size'),
             'activation': Categorical(['tanh', 'gelu', 'leaky_relu'], name='activation'),
         }
     elif args.model in ("jvgg19", "jvgg21") and not args.orth:
         full_search_space = {
             'lr': Real(1e-5, 1e-3, prior='log-uniform', name='lr'),
-            'base_pos': Integer(2, 7, name='base_pos_factor'),
-            'base_neg': Integer(2, 7, name='base_neg_factor'),
+            'base_pos': Integer(2, 5, name='base_pos_factor'),
+            'base_neg': Integer(2, 4, name='base_neg_factor'),
             'batch_size': Integer(8, 32, name='batch_size'),
             'activation': Categorical(['tanh', 'gelu', 'leaky_relu'], name='activation'),
             'dropout': Real(0.1, 0.7, name='dropout'),
@@ -457,7 +457,7 @@ def main(args):
     elif args.model in ("jvgg19", "jvgg21"):
         full_search_space = {
             'lr': Real(1e-5, 1e-3, prior='log-uniform', name='lr'),
-            'base_pos': Integer(2, 7, name='base_pos_factor'),
+            'base_pos': Integer(2, 5, name='base_pos_factor'),
             'batch_size': Integer(8, 32, name='batch_size'),
             'activation': Categorical(['tanh', 'gelu', 'leaky_relu'], name='activation'),
             'dropout': Real(0.1, 0.7, name='dropout'),
@@ -466,7 +466,7 @@ def main(args):
         full_search_space = {
             'lr': Real(1e-5, 1e-3, prior='log-uniform', name='lr'),
             'depth': Integer(3, 5, name='depth'),
-            'base_pos': Integer(2, 7, name='base_pos_factor'),
+            'base_pos': Integer(2, 5, name='base_pos_factor'),
             'batch_size': Integer(4, 16, name='batch_size'),
         }
 

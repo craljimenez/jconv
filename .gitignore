@@ -10,3 +10,5 @@ best*
 training_log*
 datasets/*
 datasets
+segcam_outputs/*
+segcam_outputs*
