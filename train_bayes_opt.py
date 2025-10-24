@@ -313,7 +313,9 @@ def objective(params):
                     print(f"Constraint not met: base_neg ({base_neg}) > base_pos ({base_pos}). Penalizing.")
                     return 1.0
 
-            mode = all_params.get('mode', None)
+            mode = all_params.get('mode', args.mode)
+            if mode is None:
+                mode = 'out'
             print(
                 f"Params: lr={lr:.6f}, depth={depth}, base_pos={base_pos}, base_neg={base_neg}, "
                 f"batch_size={batch_size}, activation={activation}, orth={orth}, mode={mode}"

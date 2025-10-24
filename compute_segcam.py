@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from typing import Optional, Sequence, Dict, List
 
 from dataset import PetDatasetTransforms, PetDatasetWrapper
-from utils import build_unet, build_unet_hybrid_jenc, build_fcn
+from utils import build_unet, build_unet_hybrid_jenc, build_fcn, dice_score, iou_score
 
 
 MEAN = [0.485, 0.456, 0.406]
@@ -301,6 +301,71 @@ def denormalize(image: torch.Tensor) -> torch.Tensor:
     mean = torch.tensor(MEAN, device=image.device).view(-1, 1, 1)
     std = torch.tensor(STD, device=image.device).view(-1, 1, 1)
     return image * std + mean
+
+
+def normalize_cam(cam: torch.Tensor) -> torch.Tensor:
+    """Scale CAM tensor to [0, 1] range with small epsilon for stability."""
+    cam_min = cam.min()
+    cam_max = cam.max()
+    return (cam - cam_min) / (cam_max - cam_min + 1e-8)
+
+
+def make_explainable_image(image: torch.Tensor, cam: torch.Tensor) -> torch.Tensor:
+    """
+    Produce an explainable image by element-wise multiplying the denormalized RGB image
+    with a normalized single-channel activation map.
+    """
+    if image.ndim != 3:
+        raise ValueError(f"Expected image tensor with shape (C,H,W); got {tuple(image.shape)}")
+    if cam.ndim != 2:
+        raise ValueError(f"Expected CAM tensor with shape (H,W); got {tuple(cam.shape)}")
+
+    image_denorm = denormalize(image).clamp(0.0, 1.0)
+    cam_norm = normalize_cam(cam).to(image_denorm.device)
+    explainable = image_denorm * cam_norm.unsqueeze(0)
+    return explainable.clamp(0.0, 1.0)
+
+
+def compute_segmentation_metrics(
+    logits: torch.Tensor,
+    mask: torch.Tensor,
+    num_classes: int,
+    device: torch.device,
+) -> dict:
+    """Compute Dice and IoU metrics for a single-sample prediction."""
+    if logits.ndim != 4:
+        raise ValueError("Expected logits tensor of shape (B,C,H,W).")
+    if mask.ndim != 3:
+        if mask.ndim == 2:
+            mask = mask.unsqueeze(0)
+        else:
+            raise ValueError("Expected mask tensor of shape (B,H,W) or (H,W).")
+    mask = mask.to(device)
+    dice = dice_score(logits, mask, n_classes=num_classes, device=device)
+    iou = iou_score(logits, mask, n_classes=num_classes, device=device)
+    return {
+        "dice_per_class": dice.cpu().tolist(),
+        "dice_mean": float(dice.mean().cpu()),
+        "iou_per_class": iou.cpu().tolist(),
+        "iou_mean": float(iou.mean().cpu()),
+    }
+
+
+def save_prediction_image(pred_mask: np.ndarray, output_path: Path, num_classes: int) -> None:
+    """Persist a segmentation mask using a spectral colormap."""
+    plt.imsave(output_path, pred_mask, cmap="nipy_spectral", vmin=0, vmax=num_classes - 1)
+
+
+def save_explainable_image(explainable: torch.Tensor, output_path: Path) -> None:
+    """Save explainable RGB image (C,H,W) or (H,W,C) as PNG."""
+    if explainable.ndim == 3 and explainable.shape[0] in {1, 3}:
+        array = explainable.detach().cpu().permute(1, 2, 0).numpy()
+    elif explainable.ndim == 3 and explainable.shape[-1] in {1, 3}:
+        array = explainable
+    else:
+        raise ValueError("Explainable image must be (C,H,W) or (H,W,C) with 1 or 3 channels.")
+    array = np.clip(array, 0.0, 1.0)
+    plt.imsave(output_path, array)
 
 
 def parse_args():
