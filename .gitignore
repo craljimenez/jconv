@@ -12,3 +12,6 @@ datasets/*
 datasets
 segcam_outputs/*
 segcam_outputs*
+results
+*.ipynb
+run_experiments_unet_hybrid_v*

@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from typing import Optional, Sequence, Dict, List
 
 from dataset import PetDatasetTransforms, PetDatasetWrapper
-from utils import build_unet, build_unet_hybrid_jenc, build_fcn, dice_score, iou_score
+from utils import build_unet, build_unet_hybrid_jenc, build_fcn, build_fcn_hybrid_jenc, dice_score, iou_score
 
 
 MEAN = [0.485, 0.456, 0.406]
@@ -58,6 +58,8 @@ def resolve_target_layer(model, model_type: str, override: Optional[str] = None)
     if model_type == "unet_hybrid":
         return model.dec_convs[-1]
     if model_type == "fcn":
+        return model.encoder[-1]
+    if model_type == "fcn_hybrid":
         return model.encoder[-1]
     raise ValueError(f"Seg-CAM layer resolution not implemented for model '{model_type}'.")
 
@@ -294,6 +296,23 @@ def build_model(model_type: str, n_classes: int, hyper: dict) -> torch.nn.Module
         )
     if model_type == "fcn":
         return build_fcn(in_ch=3, n_classes=n_classes, base_ch=base_pos, stages=depth)
+    if model_type == "fcn_hybrid":
+        base_neg = int(hyper.get("base_neg", 8))
+        activation = hyper.get("activation", "tanh")
+        if isinstance(activation, str):
+            activation = activation.lower()
+        proj_mode = hyper.get("proj_mode", "sub")
+        euc_ch = int(hyper.get("euc_ch", 128))
+        return build_fcn_hybrid_jenc(
+            in_ch=3,
+            n_classes=n_classes,
+            base_pos=base_pos,
+            base_neg=base_neg,
+            stages=depth,
+            proj_mode=proj_mode,
+            euc_ch=euc_ch,
+            act=activation,
+        )
     raise ValueError(f"Unknown model type '{model_type}'.")
 
 
@@ -324,6 +343,182 @@ def make_explainable_image(image: torch.Tensor, cam: torch.Tensor) -> torch.Tens
     cam_norm = normalize_cam(cam).to(image_denorm.device)
     explainable = image_denorm * cam_norm.unsqueeze(0)
     return explainable.clamp(0.0, 1.0)
+
+
+def apply_cam_to_input(image: torch.Tensor, cam: torch.Tensor) -> torch.Tensor:
+    """Apply a CAM to a normalized image tensor (C,H,W) preserving normalization."""
+    if image.ndim != 3:
+        raise ValueError(f"Expected image tensor with shape (C,H,W); got {tuple(image.shape)}")
+    if cam.ndim != 2:
+        raise ValueError(f"Expected CAM tensor with shape (H,W); got {tuple(cam.shape)}")
+
+    cam_norm = normalize_cam(cam).to(image.device, dtype=image.dtype)
+    return image * cam_norm.unsqueeze(0)
+
+
+def _select_cam_from_entry(entry, preferred_branch: Optional[str] = None) -> Optional[torch.Tensor]:
+    if entry is None:
+        return None
+    if isinstance(entry, dict):
+        if preferred_branch and preferred_branch in entry:
+            return entry[preferred_branch]
+        if "cam" in entry:
+            return entry["cam"]
+        if "pos" in entry:
+            return entry["pos"]
+        if "neg" in entry:
+            return entry["neg"]
+        first_key = sorted(entry.keys())[0]
+        return entry[first_key]
+    return entry
+
+
+@torch.no_grad()
+def compute_information_loss(
+    model: torch.nn.Module,
+    image: torch.Tensor,
+    class_cam_dict: Dict[int, Dict[str, torch.Tensor] | torch.Tensor],
+    num_classes: int,
+    original_outputs: Optional[torch.Tensor] = None,
+    preferred_branch: Optional[str] = None,
+    mask: Optional[torch.Tensor] = None,
+) -> tuple[dict, dict]:
+    """
+    Evaluate the confidence drop per class using CAM-masked inputs specific to each class and
+    compute segmentation quality (Dice/IoU) for the explainable predictions.
+
+    Parameters
+    ----------
+    model: Segmentation model under evaluation.
+    image: Normalized input tensor (C,H,W).
+    class_cam_dict: Mapping from class id to CAM tensor (single tensor or branch dict).
+    num_classes: Number of output classes.
+    original_outputs: Optional cached logits from the original image.
+    preferred_branch: Optional branch key when CAM entries are multi-branch.
+    mask: Optional[torch.Tensor]
+        Ground-truth segmentation mask (H,W). Required to compute Dice/IoU for explainable inputs.
+    """
+    if image.ndim != 3:
+        raise ValueError("Image must have shape (C,H,W).")
+
+    model_device = next(model.parameters()).device
+    image = image.to(model_device)
+    mask_device: Optional[torch.Tensor] = None
+
+    if original_outputs is None:
+        outputs_original = model(image.unsqueeze(0))
+    else:
+        outputs_original = original_outputs.detach()
+
+    prob_original = torch.softmax(outputs_original, dim=1)
+    pred_mask = outputs_original.argmax(dim=1).squeeze(0)
+
+    dice_per_class: List[Optional[float]] = [None] * num_classes
+    iou_per_class: List[Optional[float]] = [None] * num_classes
+
+    if mask is not None:
+        mask_device = mask.to(model_device)
+
+    losses_per_class: List[dict] = []
+    weighted_sum = 0.0
+    total_weight = 0
+
+    increase_weighted_sum = 0.0
+    increase_pixel_sum = 0
+    increase_values: List[float] = []
+
+    for cls in range(num_classes):
+        class_mask = (pred_mask == cls)
+        pixels = int(class_mask.sum().item())
+        original_conf = None
+        explainable_conf = None
+        loss = None
+        dice_cls: Optional[float] = None
+        iou_cls: Optional[float] = None
+        increase_conf: Optional[float] = None
+        increase_pixels = 0
+
+        if pixels > 0:
+            original_conf = prob_original[0, cls][class_mask].mean().item()
+
+            cam_entry = class_cam_dict.get(cls) if class_cam_dict is not None else None
+            cam_tensor = _select_cam_from_entry(cam_entry, preferred_branch=preferred_branch)
+
+            if cam_tensor is not None:
+                cam_tensor = cam_tensor.to(model_device)
+                masked_input = apply_cam_to_input(image, cam_tensor).unsqueeze(0)
+                outputs_explainable = model(masked_input)
+                prob_explainable = torch.softmax(outputs_explainable, dim=1)
+                explainable_conf = prob_explainable[0, cls][class_mask].mean().item()
+                loss = explainable_conf - original_conf
+                weighted_sum += loss * pixels
+                total_weight += pixels
+
+                if mask_device is not None:
+                    dice_vals = dice_score(outputs_explainable, mask_device.unsqueeze(0), n_classes=num_classes, device=model_device)
+                    iou_vals = iou_score(outputs_explainable, mask_device.unsqueeze(0), n_classes=num_classes, device=model_device)
+                    dice_cls = float(dice_vals[cls].item())
+                    iou_cls = float(iou_vals[cls].item())
+                    dice_per_class[cls] = dice_cls
+                    iou_per_class[cls] = iou_cls
+
+                original_pixels = prob_original[0, cls][class_mask]
+                explain_pixels = prob_explainable[0, cls][class_mask]
+                deltas = explain_pixels - original_pixels
+                positive = deltas[deltas > 0]
+                if positive.numel() > 0:
+                    increase_conf = float(positive.mean().item())
+                    increase_pixels = int(positive.numel())
+                    increase_weighted_sum += increase_conf * increase_pixels
+                    increase_pixel_sum += increase_pixels
+                    increase_values.append(increase_conf)
+
+        losses_per_class.append(
+            {
+                "class_id": cls,
+                "pixels": pixels,
+                "original_confidence": original_conf,
+                "explainable_confidence": explainable_conf,
+                "loss": loss,
+                "explainable_dice": dice_cls,
+                "explainable_iou": iou_cls,
+                "increase_confidence": increase_conf,
+                "increase_positive_pixels": increase_pixels,
+            }
+        )
+
+    mean_loss = None
+    if total_weight > 0:
+        mean_loss = weighted_sum / total_weight
+
+    valid_losses = [entry["loss"] for entry in losses_per_class if entry["loss"] is not None]
+    unweighted_mean = sum(valid_losses) / len(valid_losses) if valid_losses else None
+
+    increase_weighted = None
+    if increase_pixel_sum > 0:
+        increase_weighted = increase_weighted_sum / increase_pixel_sum
+    increase_mean = sum(increase_values) / len(increase_values) if increase_values else None
+
+    dice_values = [val for val in dice_per_class if val is not None]
+    iou_values = [val for val in iou_per_class if val is not None]
+
+    explainable_metrics = {
+        "dice_per_class": dice_per_class,
+        "dice_mean": sum(dice_values) / len(dice_values) if dice_values else None,
+        "iou_per_class": iou_per_class,
+        "iou_mean": sum(iou_values) / len(iou_values) if iou_values else None,
+    }
+
+    return (
+        {
+            "loss_per_class": losses_per_class,
+            "weighted_loss": mean_loss,
+            "mean_loss": unweighted_mean,
+            "increase_weighted": increase_weighted,
+            "increase_mean": increase_mean,
+        },
+        explainable_metrics,
+    )
 
 
 def compute_segmentation_metrics(
@@ -370,7 +565,7 @@ def save_explainable_image(explainable: torch.Tensor, output_path: Path) -> None
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Compute Segmentation Grad-CAM for trained models.")
-    parser.add_argument("--model-type", required=True, choices=["unet", "unet_hybrid", "fcn"], help="Model architecture.")
+    parser.add_argument("--model-type", required=True, choices=["unet", "unet_hybrid", "fcn", "fcn_hybrid"], help="Model architecture.")
     parser.add_argument("--weights", type=Path, required=True, help="Path to the trained model weights (.pth).")
     parser.add_argument("--best-params", type=Path, required=True, help="JSON file with best hyperparameters.")
     parser.add_argument("--index", type=int, required=True, help="Dataset index to inspect.")

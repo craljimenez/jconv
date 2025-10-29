@@ -8,6 +8,7 @@ from dataset import PetDatasetTransforms, PetDatasetWrapper
 from compute_segcam import (
     SegmentationCAM,
     build_model,
+    compute_information_loss,
     compute_segmentation_metrics,
     infer_missing_hyperparameters,
     load_hyperparameters,
@@ -22,7 +23,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Compute Seg-CAM explainability overlays and segmentation metrics for a dataset sample.",
     )
-    parser.add_argument("--model-type", required=True, choices=["unet", "unet_hybrid", "fcn"], help="Model architecture.")
+    parser.add_argument("--model-type", required=True, choices=["unet", "unet_hybrid", "fcn", "fcn_hybrid"], help="Model architecture.")
     parser.add_argument("--weights", type=Path, required=True, help="Path to trained model weights (.pth).")
     parser.add_argument("--best-params", type=Path, required=True, help="JSON file with best hyperparameters.")
     parser.add_argument("--index", type=int, required=True, help="Dataset index to evaluate.")
@@ -185,6 +186,15 @@ def main():
 
     selected_class, branch_key, cam_tensor = select_cam_entry(cam_dict, args.target_class, args.cam_branch)
     explainable = make_explainable_image(image, cam_tensor)
+    info_loss, explainable_metrics = compute_information_loss(
+        model,
+        image.to(device),
+        cam_dict,
+        args.num_classes,
+        original_outputs=outputs,
+        preferred_branch=args.cam_branch,
+        mask=mask,
+    )
 
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -209,7 +219,11 @@ def main():
         "cam_branch": branch_key,
         "prediction_path": str(pred_path),
         "explainable_path": str(explainable_path),
-        "metrics": metrics,
+        "metrics": {
+            "segmentation": metrics,
+            "information_loss": info_loss,
+            "explainable_segmentation": explainable_metrics,
+        },
     }
 
     with open(metrics_path, "w", encoding="utf-8") as f:

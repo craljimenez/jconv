@@ -10,3 +10,4 @@ torch==2.3.0 # Core deep learning library
 torchvision==0.18.0 # Datasets, models, and transforms for vision
 tqdm==4.66.4 # Progress bar
 typing_extensions==4.12.2 # Required by torch
+pandas==2.2.2 # For data manipulation
