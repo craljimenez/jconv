@@ -236,6 +236,14 @@ class JConv2dOrtho(nn.Module):
             self.mix = None  # R se construye on-the-fly sobre C_out
             self.R_param = nn.Parameter(torch.randn(out_pos, num_reflectors) * 0.01)
 
+    @property
+    def conv_neg(self):
+        """
+        Expose a module-like handle for the negative branch when weights are tied orthogonally.
+        This keeps layer-path resolution compatible with non-orthogonal models.
+        """
+        return self
+
     def forward(self, x_pos, x_neg):
         y_pos = self.conv_pos(x_pos)
 

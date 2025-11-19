@@ -96,18 +96,40 @@ run_experiment() {
 # ==============================================================================
 
 echo "Starting batch of Seg-CAM experiments..."
+# --- Experimentos para unet_hybrid con capas específicas del encoder ---
 
-# --- Experimentos para unet_hybrid ---
-run_experiment "unet_hybrid" "gradcam"   "" "false"
-run_experiment "unet_hybrid" "gradcam++" "" "false"
-run_experiment "unet_hybrid" "scorecam"  "" "false"
-run_experiment "unet_hybrid" "gradcam"   "" "true" # Ejecución con el modelo ortogonal
-run_experiment "unet_hybrid" "gradcam++"   "" "true" # Ejecución con el modelo ortogonal
-run_experiment "unet_hybrid" "scorecam"   "" "true" # Ejecución con el modelo ortogonal
+run_experiment "unet" "gradcam"   "downs[-1].conv.block[3]" "false"
+run_experiment "unet" "gradcam++" "downs[-1].conv.block[3]" "false"
+# run_experiment "fcn_hybrid" "gradcam"   "encoder[-1].block.conv2.conv_pos" "false"
+# run_experiment "fcn_hybrid" "gradcam"   "encoder[-1].block.conv2.conv_neg" "false"
+# run_experiment "fcn_hybrid" "gradcam++" "encoder[-1].block.conv2.conv_pos" "false"
+# run_experiment "fcn_hybrid" "gradcam++" "encoder[-1].block.conv2.conv_neg" "false"
+# run_experiment "fcn_hybrid" "gradcam"   "encoder[-1].block.conv2.conv_pos" "true"
+# run_experiment "fcn_hybrid" "gradcam"   "encoder[-1].block.conv2.conv_neg" "true"
+# run_experiment "fcn_hybrid" "gradcam++" "encoder[-1].block.conv2.conv_pos" "true"
+# run_experiment "fcn_hybrid" "gradcam++" "encoder[-1].block.conv2.conv_neg" "true"
+run_experiment "fcn" "gradcam"   "encoder[-1].conv.block[3]" "false"
+run_experiment "fcn" "gradcam++" "encoder[-1].conv.block[3]" "false"
 
-run_experiment "unet" "gradcam"   "" "false"
-run_experiment "unet" "gradcam++" "" "false"
-run_experiment "unet" "scorecam"  "" "false"
+# run_experiment "unet_hybrid" "gradcam++" "encoder[-1].block.conv2.conv_pos" "false"
+# run_experiment "unet_hybrid" "gradcam++" "encoder[-1].block.conv2.conv_pos" "true"
+# run_experiment "unet_hybrid" "gradcam++" "encoder[-1].block.conv2.conv_neg" "false"
+# run_experiment "unet_hybrid" "gradcam++" "encoder[-1].block.conv2.conv_neg" "true"
+
+
+
+
+# # --- Experimentos para unet_hybrid ---
+# run_experiment "unet_hybrid" "gradcam"   "" "false"
+# run_experiment "unet_hybrid" "gradcam++" "" "false"
+# run_experiment "unet_hybrid" "scorecam"  "" "false"
+# run_experiment "unet_hybrid" "gradcam"   "" "true" # Ejecución con el modelo ortogonal
+# run_experiment "unet_hybrid" "gradcam++"   "" "true" # Ejecución con el modelo ortogonal
+# run_experiment "unet_hybrid" "scorecam"   "" "true" # Ejecución con el modelo ortogonal
+
+# run_experiment "unet" "gradcam"   "" "false"
+# run_experiment "unet" "gradcam++" "" "false"
+# run_experiment "unet" "scorecam"  "" "false"
 
 # run_experiment "fcn_hybrid" "gradcam"   "" "false"
 # run_experiment "fcn_hybrid" "gradcam++" "" "false"

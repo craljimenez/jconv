@@ -42,7 +42,10 @@ def main():
     # -> model_type='unet_hybrid', model_suffix='_orth', cam_type='gradcam'
     # Example: metrics_unet_gradcam_layer-default.csv
     # -> model_type='unet', model_suffix='', cam_type='gradcam'
-    pattern = re.compile(r"metrics_(?P<model_type>.*?)(?P<model_suffix>_orth)?_(?P<cam_type>gradcam\+\+|gradcam|scorecam)_layer-.*")
+    pattern = re.compile(
+        r"metrics_(?P<model_type>.*?)(?P<model_suffix>_orth)?_"
+        r"(?P<cam_type>gradcam\+\+|gradcam|scorecam)_layer-(?P<layer_name>.+)\.csv$"
+    )
 
     for csv_file in csv_files:
         match = pattern.match(csv_file.name)
@@ -51,16 +54,19 @@ def main():
             model_type = info.get("model_type", "unknown")
             model_suffix = (info.get("model_suffix") or "").strip('_') or "none"
             cam_type = info.get("cam_type", "unknown")
+            layer_name = info.get("layer_name", "unknown")
         else:
             model_type = "unknown"
             model_suffix = "unknown"
             cam_type = "unknown"
+            layer_name = "unknown"
             print(f"Warning: Could not extract info from filename: {csv_file.name}")
 
         df = pd.read_csv(csv_file)
         df["model_type"] = model_type
         df["model_suffix"] = model_suffix
         df["cam_type"] = cam_type
+        df["layer_name"] = layer_name
         all_dfs.append(df)
 
     if not all_dfs:
@@ -71,7 +77,7 @@ def main():
 
     # Reorder columns to have model_type, model_suffix, and cam_type appear early
     cols = unified_df.columns.tolist()
-    new_order = ["model_type", "model_suffix", "cam_type"]
+    new_order = ["model_type", "model_suffix", "cam_type", "layer_name"]
     for col_name in reversed(new_order):
         if col_name in cols:
             cols.insert(0, cols.pop(cols.index(col_name)))

@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -28,23 +29,39 @@ def get_module_by_path(root: torch.nn.Module, layer_path: str) -> torch.nn.Modul
     Locate a submodule using a dotted path, allowing numeric indices for ModuleList/Sequential.
     """
     current = root
+    # Regex to match 'name[index]' pattern, e.g., 'encoder[-1]'
+    pattern = re.compile(r"(\w+)\[(-?\d+)\]")
+
     for part in layer_path.split("."):
         if not part:
             continue
-        if hasattr(current, part):
-            current = getattr(current, part)
-        else:
-            try:
-                idx = int(part)
-            except ValueError as exc:
-                raise ValueError(f"Layer path '{layer_path}' is invalid at segment '{part}'.") from exc
-            if isinstance(current, (nn.ModuleList, nn.Sequential)):
-                try:
-                    current = current[idx]
-                except IndexError as exc:
-                    raise ValueError(f"Index {idx} out of range for module list in '{layer_path}'.") from exc
-            else:
+
+        match = pattern.match(part)
+        if match:
+            name, index_str = match.groups()
+            idx = int(index_str)
+            if not hasattr(current, name):
+                raise ValueError(f"Layer path '{layer_path}' is invalid: module '{name}' not found.")
+            current = getattr(current, name)
+            if not isinstance(current, (nn.ModuleList, nn.Sequential)):
                 raise ValueError(f"Cannot index into module '{type(current).__name__}' using segment '{part}'.")
+            try:
+                current = current[idx]
+            except IndexError as exc:
+                raise ValueError(f"Index {idx} out of range for module list in '{layer_path}'.") from exc
+        else:
+            # Handle named attributes (e.g., 'block', 'conv_pos') and numeric indices for Sequential/ModuleList.
+            if hasattr(current, part):
+                candidate = getattr(current, part)
+                if isinstance(candidate, nn.Module):
+                    current = candidate
+                    continue
+            # Fallback for numeric indices in ModuleList/Sequential not caught by regex
+            try:
+                current = current[int(part)]
+            except (ValueError, IndexError, TypeError) as exc:
+                raise ValueError(f"Layer path '{layer_path}' is invalid at segment '{part}'.") from exc
+
     if not isinstance(current, nn.Module):
         raise ValueError(f"Resolved object for '{layer_path}' is not a torch.nn.Module.")
     return current

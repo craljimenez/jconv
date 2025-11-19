@@ -619,3 +619,100 @@ def build_fcn(in_ch=3, base_ch=64, stages=4, n_classes=21, k=3, bn=True):
       - bn: usar BatchNorm
     """
     return FCN(in_ch, base_ch, stages, n_classes, k, bn)
+
+
+# =====================================================
+# Implementación de VGG Clásico (Euclídeo)
+# =====================================================
+
+class ConvLayer(nn.Module):
+    """
+    Bloque convolucional estándar: Conv -> BN -> ReLU. Análogo a JConvLayer.
+    """
+    def __init__(self, in_ch, out_ch, k=3, bn=True, act=True):
+        super().__init__()
+        layers = [nn.Conv2d(in_ch, out_ch, kernel_size=k, padding=k//2)]
+        if bn:
+            layers.append(nn.BatchNorm2d(out_ch))
+        if act:
+            layers.append(nn.ReLU(inplace=True))
+        self.layer = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.layer(x)
+
+
+class VGGStage(nn.Module):
+    """
+    Agrupa varias capas convolucionales estándar y aplica max-pool al final. Análogo a JVGGStage.
+    """
+    def __init__(self, in_ch, out_ch, n_layers, k=3, bn=True, pool_kernel=2, pool_stride=2, apply_pool=True):
+        super().__init__()
+        layers = []
+        current_ch = in_ch
+        for _ in range(n_layers):
+            layers.append(ConvLayer(current_ch, out_ch, k=k, bn=bn))
+            current_ch = out_ch
+        self.layers = nn.Sequential(*layers)
+        self.pool = nn.MaxPool2d(kernel_size=pool_kernel, stride=pool_stride) if apply_pool else None
+
+    def forward(self, x):
+        x = self.layers(x)
+        if self.pool is not None:
+            x = self.pool(x)
+        return x
+
+
+class VGG(nn.Module):
+    """
+    Clasificador estilo VGG con convoluciones estándar (Euclídeas). Análogo a JVGG.
+    """
+    def __init__(self, in_ch=3, base_ch=64, stage_layers=(2, 2, 3, 3, 3),
+                 channel_multipliers=(1, 2, 4, 8, 8), n_classes=1000,
+                 avgpool_size=7, classifier_dims=(4096, 4096), dropout=0.5):
+        super().__init__()
+        
+        stages = []
+        current_ch = in_ch
+        for i, (n_layers, mult) in enumerate(zip(stage_layers, channel_multipliers)):
+            out_ch = base_ch * mult
+            in_channels_stage = current_ch if i == 0 else base_ch * channel_multipliers[i-1]
+            stages.append(VGGStage(in_channels_stage, out_ch, n_layers))
+        self.features = nn.Sequential(*stages)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((avgpool_size, avgpool_size))
+
+        classifier_layers = []
+        in_features = base_ch * channel_multipliers[-1] * avgpool_size * avgpool_size
+        for hidden in classifier_dims:
+            classifier_layers.extend([nn.Linear(in_features, hidden), nn.ReLU(True), nn.Dropout(p=dropout)])
+            in_features = hidden
+        classifier_layers.append(nn.Linear(in_features, n_classes))
+        self.classifier = nn.Sequential(*classifier_layers)
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        return self.classifier(x)
+
+def build_vgg16(in_ch=3, base_pos=32, n_classes=1000,
+                 k=3, bn=True, act='tanh', avgpool_size=7,
+                 classifier_dims=(4096, 4096), dropout=0.5):
+    """
+    Construye un clasificador JVGG con configuración equivalente a VGG16.
+    stage_layers = (2, 2, 3, 3, 3) -> 13 conv + 3 capas densas.
+    """
+    return VGG(
+        in_ch=in_ch,
+        base_ch=base_pos,
+        stage_layers=(2, 2, 3, 3, 3),
+        channel_multipliers=(1, 2, 4, 8, 8),
+        n_classes=n_classes,
+        k=k,
+        bn=bn,
+        act=act,
+        avgpool_size=avgpool_size,
+        classifier_dims=classifier_dims,
+        dropout=dropout,
+    )

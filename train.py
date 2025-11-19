@@ -184,7 +184,11 @@ def main(args):
 
     # --- 1. Dataset and DataLoaders ---
     if is_classification:
+        print("train_dir given:",args.train_dir)
         if args.train_dir:
+            if not os.path.isdir(args.train_dir):
+                raise FileNotFoundError(f"The provided training directory does not exist or is not a directory: {args.train_dir}")
+
             transform = FolderDatasetTransforms(size=args.img_size)
             full_dataset = FolderDatasetWrapper(args.train_dir, transform=transform)
             if args.val_dir:

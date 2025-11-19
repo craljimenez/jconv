@@ -1,8 +1,11 @@
 import torch
 import numpy as np
 from torchvision import transforms
-from torchvision.datasets import OxfordIIITPet, ImageFolder
-from torchvision.datasets.folder import default_loader
+from torchvision.datasets import OxfordIIITPet
+
+import os
+from PIL import Image
+from torch.utils.data import Dataset
 
 class PetDatasetTransforms:
     """Transforms for the Oxford-IIIT Pet Dataset."""
@@ -93,28 +96,72 @@ class FolderDatasetTransforms:
     def __call__(self, img):
         return self.transform(img)
 
+class FolderDatasetWrapper(Dataset):
+    """
+    A custom PyTorch Dataset for image classification datasets 
+    where sub-folders represent class labels.
+    """
+    def __init__(self, root_dir, transform=None):
+        """
+        Initializes the Dataset. This function scans the directory 
+        and builds a list of (image_path, label_index) tuples.
+        
+        Args:
+            root_dir (str): Root directory of the dataset.
+            transform (callable, optional): Optional transform to be applied 
+                                            on a sample.
+        """
+        self.root_dir = root_dir
+        self.transform = transform
+        self.image_paths = []
+        self.labels = []
+        self.class_to_idx = {}
+        
+        # --- 1. Scan and Map Classes (Done ONCE at initialization) ---
+        print(f"Scanning dataset in: {root_dir}")
+        classes = sorted([d.name for d in os.scandir(root_dir) if d.is_dir()])
+        
+        for i, class_name in enumerate(classes):
+            self.class_to_idx[class_name] = i
+            class_path = os.path.join(root_dir, class_name)
+            
+            # Find all image files in the sub-folder
+            sub_folders = os.listdir(class_path)
+            for filename in sub_folders:
+                if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    path = os.path.join(class_path, filename)
+                    self.image_paths.append(path)
+                    self.labels.append(i) # Store the integer index
+        self.classes = classes
+        print(f"Found {len(self.image_paths)} images across {len(classes)} classes.")
 
-class FolderDatasetWrapper(ImageFolder):
-    """Wrapper over torchvision.datasets.ImageFolder to apply the same transform pipeline as FolderDatasetTransforms."""
-    def __init__(self, root, transform=None, target_transform=None, loader=None, is_valid_file=None):
-        loader = loader or default_loader
 
-        super().__init__(
-            root=root,
-            transform=None,
-            target_transform=target_transform,
-            loader=loader,
-            is_valid_file=is_valid_file,
-        )
-        self.image_transform = transform or transforms.ToTensor()
+        
 
-    def __getitem__(self, index):
-        path, target = self.samples[index]
-        sample = self.loader(path)
 
-        if self.image_transform:
-            sample = self.image_transform(sample)
-        if self.target_transform is not None:
-            target = self.target_transform(target)
+    def __len__(self):
+        """Returns the total number of samples in the dataset."""
+        return len(self.image_paths)
 
-        return sample, target
+
+    def __getitem__(self, idx):
+        """
+        Loads and returns one sample (image and label) from the dataset.
+        This is the method responsible for LAZY LOADING.
+        
+        Args:
+            idx (int): Index of the sample to fetch.
+            
+        Returns:
+            tuple: (image, label) where image is a Tensor and label is an integer.
+        """
+        # --- 2. Load Image Data (Done ON-DEMAND) ---
+        img_path = self.image_paths[idx]
+        image = Image.open(img_path).convert('RGB')
+        label = self.labels[idx]
+
+        # --- 3. Apply Transformations ---
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label
