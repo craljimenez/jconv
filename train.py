@@ -7,6 +7,8 @@ import argparse
 import json
 import os
 
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+
 from dataset import (
     PetDatasetTransforms,
     PetDatasetWrapper,
@@ -22,20 +24,12 @@ from utils import (
     build_fcn_hybrid_jenc,
     build_jvgg19,
     build_jvgg21,
+    build_vgg19,
+    build_vgg21,
     dice_score,
     iou_score,
+    get_device,
 )
-
-
-def get_device():
-    """Gets the best available device for training."""
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    elif torch.backends.mps.is_available(): # For Apple Silicon
-        return torch.device("mps")
-    else:
-        return torch.device("cpu")
-
 
 def train_one_epoch_seg(model, loader, optimizer, loss_fn, device):
     """Runs a single training epoch."""
@@ -117,12 +111,24 @@ def train_one_epoch_cls(model, loader, optimizer, loss_fn, device):
     return avg_loss, avg_acc
 
 
-def evaluate_cls(model, loader, loss_fn, device):
-    """Evaluates classification models on the validation set."""
+def evaluate_cls(model, loader, loss_fn, device, score='f1'):
+    """
+    Evalúa modelos de clasificación usando diferentes métricas de sklearn.
+
+    Args:
+        model: El modelo a evaluar.
+        loader: DataLoader para el conjunto de validación.
+        loss_fn: La función de pérdida.
+        device: El dispositivo (CPU/GPU).
+        score (str): La métrica a calcular ('accuracy', 'f1', 'precision', 'recall').
+
+    Returns:
+        tuple: (pérdida_promedio, valor_de_la_métrica)
+    """
     model.eval()
     total_loss = 0.0
-    correct = 0
-    total = 0
+    all_preds = []
+    all_targets = []
 
     with torch.no_grad():
         loop = tqdm(loader, desc="Evaluating")
@@ -133,12 +139,20 @@ def evaluate_cls(model, loader, loss_fn, device):
             total_loss += loss.item()
 
             preds = outputs.argmax(dim=1)
-            correct += (preds == targets).sum().item()
-            total += targets.size(0)
+            all_preds.extend(preds.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
 
     avg_loss = total_loss / len(loader)
-    avg_acc = correct / max(total, 1)
-    return avg_loss, avg_acc
+
+    # Calcular la métrica solicitada usando sklearn
+    if score == 'accuracy':
+        metric_value = accuracy_score(all_targets, all_preds)
+    elif score == 'f1':
+        metric_value = f1_score(all_targets, all_preds, average='macro')
+    else:
+        raise ValueError(f"Métrica de evaluación desconocida: '{score}'. Use 'accuracy' o 'f1'.")
+
+    return avg_loss, metric_value
 
 
 def main(args):
@@ -179,7 +193,7 @@ def main(args):
         else:
             print("Warning: --gpu-mem-fraction must be between 0.0 and 1.0. Ignoring.")
 
-    classification_models = {'jvgg19', 'jvgg21'}
+    classification_models = {'jvgg19', 'jvgg21','vgg19','vgg21'}
     is_classification = args.model in classification_models
 
     # --- 1. Dataset and DataLoaders ---
@@ -215,7 +229,7 @@ def main(args):
             cls_transform = PetClassificationTransforms(size=args.img_size)
             train_dataset = PetClassificationWrapper(root=args.data_root, split='trainval', transform=cls_transform, download=True)
             val_dataset = PetClassificationWrapper(root=args.data_root, split='test', transform=cls_transform, download=True)
-
+        
         base_dataset = train_dataset.dataset if isinstance(train_dataset, torch.utils.data.Subset) else train_dataset
         dataset_classes = getattr(base_dataset, 'classes', None)
         if args.num_classes is not None:
@@ -235,6 +249,7 @@ def main(args):
         n_classes = 3  # 0: Background, 1: Pet, 2: Border
         class_names = ['Background', 'Pet', 'Border']
 
+    
     pin_memory = device.type == 'cuda'
     train_loader = DataLoader(
         train_dataset,
@@ -309,6 +324,24 @@ def main(args):
             avgpool_size=args.avgpool_size,
             dropout=args.dropout,
         )
+    elif args.model == 'vgg19':
+        print(f"Building VGG19 classifier with base_ch={args.base_pos}")
+        model = build_vgg19(
+            in_ch=3,
+            base_ch=args.base_pos,
+            n_classes=n_classes,
+            avgpool_size=args.avgpool_size,
+            dropout=args.dropout,
+        )
+    elif args.model == 'vgg21':
+        print(f"Building VGG21 classifier with base_ch={args.base_pos}")
+        model = build_vgg21(
+            in_ch=3,
+            base_pos=args.base_pos,
+            n_classes=n_classes,
+            avgpool_size=args.avgpool_size,
+            dropout=args.dropout,
+        )
     else:
         raise ValueError(f"Unknown model type: '{args.model}'")
 
@@ -323,7 +356,7 @@ def main(args):
     best_val_metric = -1.0
     training_history = []
     log_path = f"training_log_{args.model}.json"
-    metric_label = "Accuracy" if is_classification else "mIoU"
+    metric_label = args.metric_evaluating.title() if is_classification else "mIoU"
 
     for epoch in range(args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
@@ -334,14 +367,14 @@ def main(args):
 
             val_loss, val_acc = evaluate_cls(model, val_loader, loss_fn, device)
             scheduler.step(val_loss)
-            print(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f} | Val Acc: {val_acc * 100:.2f}%")
+            print(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f} | Val {metric_label}: {val_acc * 100:.2f}%")
 
             epoch_log = {
                 'epoch': epoch + 1,
                 'train_loss': train_loss,
                 'train_accuracy': train_acc,
                 'val_loss': val_loss,
-                'val_accuracy': val_acc,
+                f'val_{args.metric_evaluating}': val_acc,
             }
             current_metric = val_acc
         else:
@@ -393,6 +426,26 @@ def main(args):
             torch.save(model.state_dict(), model_path)
             print(f"Validation {metric_label} improved. Saved model to {model_path}")
 
+    # --- 5. Save validation loader configuration ---
+    if args.save_val_loader_config:
+        val_loader_config = {
+            "model": args.model,
+            "data_root": args.data_root,
+            "train_dir": args.train_dir,
+            "val_dir": args.val_dir,
+            "img_size": args.img_size,
+            "batch_size": args.batch_size,
+            "num_workers": args.num_workers,
+            "num_classes": n_classes,
+            "best_model_path": os.path.join("models", f"best_model_{args.model}.pth")
+        }
+        config_path = os.path.join("models", f"val_loader_config_{args.model}.json")
+        with open(config_path, 'w') as f:
+            json.dump(val_loader_config, f, indent=4)
+        print(f"\nValidation loader configuration saved to {config_path}")
+        print("You can now use test.py with this configuration to evaluate the model.")
+
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train segmentation and classification models on Oxford-IIIT Pet or custom datasets.")
@@ -400,7 +453,7 @@ if __name__ == '__main__':
         '--model',
         type=str,
         default='unet_hybrid',
-        choices=['unet', 'unet_hybrid', 'fcn', 'fcn_hybrid', 'jvgg19', 'jvgg21'],
+        choices=['unet', 'unet_hybrid', 'fcn', 'fcn_hybrid', 'jvgg19', 'jvgg21','vgg19', 'vgg21'],
         help="Model to train.",
     )
     parser.add_argument(
@@ -504,6 +557,18 @@ if __name__ == '__main__':
         type=float,
         default=0.5,
         help="Dropout probability within the JVGG classifier head.",
+    )
+    parser.add_argument(
+        "--metric-evaluating",
+        type=str,
+        default="accuracy",
+        help="Metric to evaluate validation data in classification task."
+        
+    )
+    parser.add_argument(
+        '--save-val-loader-config',
+        action='store_true',
+        help="Save the configuration required to recreate the validation loader for future testing."
     )
     args = parser.parse_args()
     main(args)

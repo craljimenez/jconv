@@ -15,3 +15,5 @@ segcam_outputs*
 results
 *.ipynb
 run_experiments_unet_hybrid_v*
+logs_training*
+clscam_outputs*

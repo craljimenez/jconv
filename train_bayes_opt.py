@@ -9,6 +9,7 @@ import json
 import os
 import csv
 from skopt import gp_minimize
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from skopt.plots import plot_objective, plot_evaluations
 from skopt.space import Real, Integer, Categorical
 from dataset import (
@@ -26,6 +27,8 @@ from utils import (
     build_fcn_hybrid_jenc,
     build_jvgg19,
     build_jvgg21,
+    build_vgg19,
+    build_vgg21,
     dice_score,
     iou_score,
 )
@@ -120,12 +123,24 @@ def train_one_epoch_cls(model, loader, optimizer, loss_fn, device):
     return avg_loss, avg_acc
 
 
-def evaluate_cls(model, loader, loss_fn, device):
-    """Evaluates classification models."""
+def evaluate_cls(model, loader, loss_fn, device, score='f1'):
+    """
+    Evalúa modelos de clasificación usando diferentes métricas de sklearn.
+
+    Args:
+        model: El modelo a evaluar.
+        loader: DataLoader para el conjunto de validación.
+        loss_fn: La función de pérdida.
+        device: El dispositivo (CPU/GPU).
+        score (str): La métrica a calcular ('accuracy', 'f1', 'precision', 'recall').
+
+    Returns:
+        tuple: (pérdida_promedio, valor_de_la_métrica)
+    """
     model.eval()
     total_loss = 0.0
-    correct = 0
-    total = 0
+    all_preds = []
+    all_targets = []
 
     with torch.no_grad():
         loop = tqdm(loader, desc="Evaluating")
@@ -136,12 +151,20 @@ def evaluate_cls(model, loader, loss_fn, device):
             total_loss += loss.item()
 
             preds = outputs.argmax(dim=1)
-            correct += (preds == targets).sum().item()
-            total += targets.size(0)
+            all_preds.extend(preds.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
 
     avg_loss = total_loss / len(loader)
-    avg_acc = correct / max(total, 1)
-    return avg_loss, avg_acc
+
+    # Calcular la métrica solicitada usando sklearn
+    if score == 'accuracy':
+        metric_value = accuracy_score(all_targets, all_preds)
+    elif score == 'f1':
+        metric_value = f1_score(all_targets, all_preds, average='macro')
+    else:
+        raise ValueError(f"Métrica de evaluación desconocida: '{score}'. Use 'accuracy' o 'f1'.")
+
+    return avg_loss, metric_value
 
 # Global variable to keep track of trials
 trial_num = 0
@@ -164,7 +187,7 @@ def objective(params):
     if 'base_neg_factor' in all_params:
         all_params['base_neg'] = 2 ** all_params.pop('base_neg_factor')
 
-    classification_models = {'jvgg19', 'jvgg21'}
+    classification_models = {'jvgg19', 'jvgg21','vgg19', 'vgg21'}
     is_classification = args.model in classification_models
 
     lr = float(all_params['lr'])
@@ -182,7 +205,7 @@ def objective(params):
     num_epochs_per_trial = args.num_epochs_per_trial
     device = get_device()
     pin_memory = device.type == 'cuda'
-    metric_label = "Accuracy" if is_classification else "mIoU"
+    metric_label = args.metric_evaluation.title() if is_classification else "mIoU"
 
     print(f"\n--- Bayesian Opt Trial: {trial_num} ---")
 
@@ -285,6 +308,24 @@ def objective(params):
                     avgpool_size=args.avgpool_size,
                     dropout=dropout,
                 )
+            elif args.model == 'vgg19':
+                model = build_vgg21(
+                    in_ch=3,
+                    base_ch=base_pos,
+                    n_classes=n_classes,
+                    # activation=activation,
+                    avgpool_size=args.avgpool_size,
+                    dropout=dropout,
+                )
+            elif args.model == 'vgg21':
+                model = build_vgg21(
+                    in_ch=3,
+                    base_ch=base_pos,
+                    n_classes=n_classes,
+                    # activation=activation,
+                    avgpool_size=args.avgpool_size,
+                    dropout=dropout,
+                )
             else:
                 raise ValueError(f"Unknown classification model type: '{args.model}'")
 
@@ -296,8 +337,8 @@ def objective(params):
             for epoch in range(num_epochs_per_trial):
                 print(f"\n--- Epoch {epoch + 1}/{num_epochs_per_trial} ---")
                 train_one_epoch_cls(model, train_loader, optimizer, loss_fn, device)
-                _, val_acc = evaluate_cls(model, val_loader, loss_fn, device)
-                print(f"Epoch {epoch + 1} - Val Acc: {val_acc:.4f}")
+                _, val_acc = evaluate_cls(model, val_loader, loss_fn, device,score = args.metric_evaluation)
+                print(f"Epoch {epoch + 1} - Val {metric_label}: {val_acc:.4f}")
                 if val_acc > best_val_metric:
                     best_val_metric = val_acc
 
@@ -464,6 +505,13 @@ def main(args):
             'activation': Categorical(['tanh', 'gelu', 'leaky_relu'], name='activation'),
             'dropout': Real(0.1, 0.7, name='dropout'),
         }
+    elif args.model in ("vgg19", "vgg21"):
+        full_search_space = {
+            'lr': Real(1e-5, 1e-3, prior='log-uniform', name='lr'),
+            'base_pos': Integer(2, 5, name='base_pos_factor'),
+            'batch_size': Integer(8, 32, name='batch_size'),
+            'dropout': Real(0.1, 0.7, name='dropout'),
+        }
     else:
         full_search_space = {
             'lr': Real(1e-5, 1e-3, prior='log-uniform', name='lr'),
@@ -592,7 +640,14 @@ if __name__ == '__main__':
         '--model',
         type=str,
         default='unet_hybrid',
-        choices=['unet', 'unet_hybrid', 'fcn', 'fcn_hybrid', 'jvgg19', 'jvgg21'],
+        choices=['unet',
+                 'unet_hybrid',
+                 'fcn',
+                 'fcn_hybrid',
+                 'jvgg19',
+                 'jvgg21',
+                 'vgg19',
+                 'vgg21'],
         help="Model family to optimize.",
     )
     parser.add_argument('--lr', type=float, default=None, help="Learning rate. If not set, it will be optimized.")
@@ -708,6 +763,12 @@ if __name__ == '__main__':
         default=None,
         choices=['in', 'out', 'output'],
         help="Orthogonal mode for JConv2dOrtho. If not set, it will be optimized.",
+    )
+    parser.add_argument(
+        "--metric-evaluation",
+        type=str,
+        default="accuracy",
+        help="metric to maximize the bayesian Process. It only is avaliable to classification task."
     )
     args = parser.parse_args()
     main(args)
