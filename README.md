@@ -149,12 +149,15 @@ W_neg = (R_in ⊗ I_{k^2}) · W_pos
 y_pos = conv2d(x_pos, W_pos)
 y_neg = conv2d(x_neg, W_neg)
 ```
-**Requisito:** C_in^+ = C_in^-.
+**Requisito:** $C_in^+ = C_in^-$.
 
 ### B.3 Regularizaciones
-$\mathcal L_{ortho} = \|\mathrm{flatten}(W_+)^T\mathrm{flatten}(W_-)\|_F^2$,  
-$\mathcal L_{iso} = (\|\cdot\|_+ - \|\cdot\|_-)^2$.
-
+```math
+\mathcal L_{ortho} = \|\mathrm{flatten}(W_+)^T\mathrm{flatten}(W_-)\|_F^2,
+```
+```math  
+$\mathcal L_{iso} = (\|\cdot\|_+ - \|\cdot\|_-)^2.
+```
 ---
 
 ## Anexo C. Integración en Arquitecturas
