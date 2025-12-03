@@ -156,7 +156,7 @@ y_neg = conv2d(x_neg, W_neg)
 \mathcal L_{ortho} = \|\mathrm{flatten}(W_+)^T\mathrm{flatten}(W_-)\|_F^2,
 ```
 ```math  
-$\mathcal L_{iso} = (\|\cdot\|_+ - \|\cdot\|_-)^2.
+\mathcal L_{iso} = (\|\cdot\|_+ - \|\cdot\|_-)^2.
 ```
 ---
 
