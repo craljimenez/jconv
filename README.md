@@ -9,9 +9,9 @@ Documento completo sobre la formulación, análisis y herramientas para implemen
 
 ### 1.1 Espacios de Pontryagin
 Un **espacio de Pontryagin** $\Pi_\kappa$ es un espacio vectorial real o complejo con producto interno indefinido $[x,y]_J = \langle Jx, y\rangle$, donde $J = \mathrm{diag}(I_p, -I_q)$ y $q = \kappa < \infty$. La descomposición fundamental es:
-$$
+```math
 \mathcal{H}_J = \mathcal{H}_+ \oplus \mathcal{H}_-, \quad [x,y]_J = \langle x_+, y_+ \rangle - \langle x_-, y_- \rangle.
-$$
+```
 
 Las subpartes $\mathcal H_+,\mathcal H_-$ son ortogonales respecto a $[\cdot,\cdot]_J$ y su diferencia de dimensión define el índice $\kappa$.
 
@@ -33,9 +33,9 @@ Si un núcleo $K$ no es positivo definido, se obtiene un **espacio de reproducci
 
 ### 2.1 Definición general
 Sea la entrada $X = (X_+, X_-)$ y el conjunto de filtros $W = (W_+, W_-)$. La operación convolucional indefinida es:
-$$
+```math
 \mathrm{Conv}_J(X,W) = \mathrm{conv}(X_+,W_+) - \mathrm{conv}(X_-,W_-).
-$$
+```
 
 El backprop mantiene el patrón de signos: los gradientes en la rama negativa se invierten.
 
@@ -57,7 +57,7 @@ Esto aproxima una **J-isometría discreta**, conservando la métrica indefinida 
 ## 3. Pipeline Profundo en Pontryagin
 
 ### 3.1 Capa Lift2Pontryagin
-Transforma vectores o tensores euclídeos $x$ en pares $(x_+,x_-)$. Controla el índice $\kappa = q$ del espacio. Puede implementarse como convolución 1×1 por rama.
+Transforma vectores o tensores euclídeos $x$ en pares $(x_+,x_-)$. Controla el índice $\kappa = q$ del espacio. Puede implementarse como una convolución 1×1 por rama.
 
 ### 3.2 Bloques básicos J
 - **JConv2d:** convolución separada por rama con resta implícita.
@@ -111,23 +111,22 @@ El formalismo de Pontryagin permite incorporar métricas indefinidas en redes co
 ## Anexo A. J-adjuntos para convoluciones discretas
 
 ### A.1 Operadores por bloques
-$$
+```math
 T_W \begin{bmatrix}x_+\\x_-\end{bmatrix} = \begin{bmatrix}\mathrm{conv}(x_+,W_+)\\\mathrm{conv}(x_-,W_-)\end{bmatrix}
-$$
-$[
-[x,y]_J = \langle x_+,y_+\rangle - \langle x_-,y_-\rangle = \langle Jx,y\rangle.$$
+```
+$[x,y]_J = \langle x_+,y_+\rangle - \langle x_-,y_-\rangle = \langle Jx,y\rangle$.
 
 ### A.2 J-adjunto
-$$
+```math
 T_W^{\sharp}=J^{-1}T_W^*J = \begin{bmatrix}K_{++}^*&0\\0&K_{--}^*\end{bmatrix}
-$$
+```
 $J$-simetría: $K_{++}=K_{++}^*, K_{--}=K_{--}^*$.  
 $J$-isometría: $K_{++}^*K_{++}=I, K_{--}^*K_{--}=I$.
 
 ### A.3 Cruces de ramas
-$$
+```math
 T_W = \begin{bmatrix}K_{++}&K_{+-}\\K_{-+}&K_{--}\end{bmatrix},\quad T_W^{\sharp}=\begin{bmatrix}K_{++}^*&-K_{-+}^*\\-K_{+-}^*&K_{--}^*\end{bmatrix}
-$$
+```
 
 ### A.4 Atado ortogonal
 $W_- = R W_+$ con $R^\top R = I$ $\Rightarrow$ $K_{--}=R K_{++}$, lo que preserva $K_\pm^*K_\pm \approx I$.
@@ -177,4 +176,3 @@ $\mathcal L_{iso} = (\|\cdot\|_+ - \|\cdot\|_-)^2$.
 - Encoder J + decoder euclídeo para reducir costo.  
 - CNN-J completa para máxima coherencia geométrica.  
 - Índice $\kappa$ pequeño en datos simples; mayor si existen contrastes fuertes.
-
