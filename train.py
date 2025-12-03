@@ -337,7 +337,7 @@ def main(args):
         print(f"Building VGG21 classifier with base_ch={args.base_pos}")
         model = build_vgg21(
             in_ch=3,
-            base_pos=args.base_pos,
+            base_ch=args.base_pos,
             n_classes=n_classes,
             avgpool_size=args.avgpool_size,
             dropout=args.dropout,

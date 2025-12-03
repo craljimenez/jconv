@@ -141,6 +141,8 @@ def filter_config_for_model(config: dict, expected_args: list) -> dict:
         # El argumento 'base_pos' en VGG se mapea a 'base_ch'
         if key == 'base_pos' and 'base_ch' in expected_args:
             model_params['base_ch'] = value
+        elif key == "activation" and 'act' in expected_args:
+            model_params['act'] = value
         elif key in expected_args:
             model_params[key] = value
     return model_params
