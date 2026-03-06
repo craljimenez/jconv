@@ -1,13 +1,13 @@
-MarkupSafe==2.1.5 # Required by Jinja2
-matplotlib==3.9.0 # For plotting
-networkx==3.3 # Required by torchvision
-numpy==1.26.4 # Required by torch, torchvision
-Pillow==10.3.0 # Required by torchvision
-scikit-learn==1.5.0 # Required by scikit-optimize
-scikit-optimize==0.10.1 # For Bayesian Optimization
-sympy==1.12 # Required by torch
-torch==2.3.0 # Core deep learning library
-torchvision==0.18.0 # Datasets, models, and transforms for vision
-tqdm==4.66.4 # Progress bar
-typing_extensions==4.12.2 # Required by torch
-pandas==2.2.2 # For data manipulation
+numpy # Required by torch, torchvision
+sympy # Required by torch
+MarkupSafe # Required by Jinja2
+networkx # Required by torchvision
+Pillow # Required by torchvision
+scikit-learn # Required by scikit-optimize
+scikit-optimize # For Bayesian Optimization
+tqdm # Progress bar
+typing_extensions # Required by torch
+pandas # For data manipulation
+matplotlib # For plotting
+torch # Core deep learning library
+torchvision # Datasets, models, and transforms for vision

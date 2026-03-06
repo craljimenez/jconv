@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
+from torchvision.transforms import v2
 import numpy as np
 from tqdm import tqdm
 import argparse
@@ -19,6 +20,7 @@ from dataset import (
     PetClassificationWrapper,
     FolderDatasetTransforms,
     FolderDatasetWrapper,
+    YOLOSegDataset
 )
 from utils import (
     build_unet,
@@ -51,7 +53,7 @@ def train_one_epoch_seg(model, loader, optimizer, loss_fn, device):
     total_loss = 0.0
 
     for images, masks in loop:
-        images, masks = images.to(device), masks.to(device)
+        images, masks = images.to(device), masks.to(device,dtype=torch.float32)
 
         # Forward pass
         outputs = model(images)
@@ -68,25 +70,51 @@ def train_one_epoch_seg(model, loader, optimizer, loss_fn, device):
     return total_loss / len(loader)
 
 
-def evaluate_seg(model, loader, loss_fn, n_classes, device):
+def evaluate_seg(model, loader, loss_fn, n_classes, device, wrapper_folder=False):
     """Evaluates the model on the validation set."""
     model.eval()
     total_loss = 0.0
-    total_dice = torch.zeros(n_classes, device=device)
-    total_iou = torch.zeros(n_classes, device=device)
+    
+    # Inicializar tensores en 0 según el dispositivo
+    total_dice = torch.zeros(n_classes, device=device) if n_classes > 1 else 0.0
+    total_iou = torch.zeros(n_classes, device=device) if n_classes > 1 else 0.0
     
     with torch.no_grad():
         loop = tqdm(loader, desc="Evaluating")
         for images, masks in loop:
-            images, masks = images.to(device), masks.to(device)
+            images = images.to(device)
 
+            # --- LÓGICA CONDICIONAL ---
+            if args.wrapper_folder:
+                # CASO A: Wrapper activo (Multicanal / One-Hot)
+                # Formato esperado del Dataset: (Batch, Canales, H, W)
+                
+                # 1. Para el Loss: Necesitamos Float para Soft-Targets/CrossEntropy
+                masks = masks.to(device, dtype=torch.float32)
+                
+                # 2. Para Métricas: Colapsamos canales a índices (Batch, H, W)
+                mask_indices = torch.argmax(masks, dim=1)
+                
+            else:
+                # CASO B: Estándar (Máscara de índices simple)
+                # Formato esperado del Dataset: (Batch, H, W)
+                
+                # 1. Para el Loss: Necesitamos Long (Enteros) para CrossEntropy estándar
+                masks = masks.to(device, dtype=torch.long)
+                
+                # 2. Para Métricas: Ya son índices, se usa directo
+                mask_indices = masks
+
+            # --- CÁLCULOS ---
             outputs = model(images)
+            
+            # Calculamos Loss (usa 'masks' con el formato correcto según el caso)
             loss = loss_fn(outputs, masks)
             total_loss += loss.item()
 
-            # Calculate metrics
-            total_dice += dice_score(outputs, masks, n_classes, device)
-            total_iou += iou_score(outputs, masks, n_classes, device)
+            # Calculamos métricas (siempre usa 'mask_indices' plano)
+            total_dice += dice_score(outputs, mask_indices, n_classes, device)
+            total_iou += iou_score(outputs, mask_indices, n_classes, device)
 
     avg_loss = total_loss / len(loader)
     avg_dice = total_dice / len(loader)
@@ -341,8 +369,9 @@ def objective(params):
                 print(f"Epoch {epoch + 1} - Val {metric_label}: {val_acc:.4f}")
                 if val_acc > best_val_metric:
                     best_val_metric = val_acc
-
+        
         else:
+
             depth = all_params['depth']
             base_pos = all_params['base_pos']
             base_neg = None
@@ -361,14 +390,52 @@ def objective(params):
                 f"Params: lr={lr:.6f}, depth={depth}, base_pos={base_pos}, base_neg={base_neg}, "
                 f"batch_size={batch_size}, activation={activation}, orth={orth}, mode={mode}"
             )
+            
+            
 
-            dataset_transforms = PetDatasetTransforms(size=args.img_size)
-            train_dataset = PetDatasetWrapper(
-                root=args.data_root, split='trainval', transform=dataset_transforms, download=True
-            )
-            val_dataset = PetDatasetWrapper(
-                root=args.data_root, split='test', transform=dataset_transforms, download=True
-            )
+            if args.wrapper_folder:
+                train_transforms = v2.Compose([
+                    # Redimensionar ambos
+                    v2.Resize((args.img_size, args.img_size)),
+                    
+                    # Data Augmentation: Flip horizontal aleatorio (sincronizado)
+                    # v2.RandomHorizontalFlip(p=0.5),
+                    
+                    # Data Augmentation: Rotación ligera (sincronizado)
+                    # v2.RandomRotation(degrees=10),
+                    
+                    # Conversión de tipos FINAL:
+                    # Convertimos la imagen a float32 y escalamos [0,1]
+                    v2.ToDtype(torch.float32, scale=True),
+                    # La máscara NO se escala (queremos IDs enteros 0, 1, 7...), solo se asegura que sea Long
+                    # Nota: No usamos Normalize aquí para poder visualizar fácil, 
+                    # pero deberías agregarlo para el entrenamiento real.
+                ])
+                train_dataset = YOLOSegDataset(
+                    images_dir = os.path.join(args.data_root, 'train/images'),
+                    labels_dir = os.path.join(args.data_root, 'train/labels'),
+                    transform = train_transforms,
+                    classes = args.classes,
+                    add_background = args.add_background,
+                    target_class_id = args.target_class_id 
+                )
+
+                val_dataset = YOLOSegDataset(
+                    images_dir = os.path.join(args.data_root, 'valid/images'),
+                    labels_dir = os.path.join(args.data_root, 'valid/labels'),
+                    transform = train_transforms,
+                    classes = args.classes,
+                    add_background = args.add_background,
+                    target_class_id = args.target_class_id 
+                )
+            else:
+                dataset_transforms = PetDatasetTransforms(size=args.img_size)
+                train_dataset = PetDatasetWrapper(
+                    root=args.data_root, split='trainval', transform=dataset_transforms, download=True
+                )
+                val_dataset = PetDatasetWrapper(
+                    root=args.data_root, split='test', transform=dataset_transforms, download=True
+                )
 
             train_loader = DataLoader(
                 train_dataset,
@@ -385,7 +452,7 @@ def objective(params):
                 pin_memory=pin_memory,
             )
 
-            n_classes = 3
+            n_classes = args.num_classes # Organizar numero de clases según bases de datos
             if args.model == 'unet':
                 model = build_unet(in_ch=3, n_classes=n_classes, base_ch=base_pos, depth=depth, bilinear=True)
             elif args.model == 'unet_hybrid':
@@ -461,8 +528,8 @@ def main(args):
     global search_space_dims, fixed_params, csv_log_filename
 
     # --- Define filenames based on model ---
-    csv_log_filename = f'bayes_opt_log_{args.model}.csv'
-    json_log_filename = f'best_hyperparameters_{args.model}.json'
+    csv_log_filename = f'bayes_opt_log_{args.model}_{args.prefix_name}.csv'
+    json_log_filename = f'best_hyperparameters_{args.model}_{args.prefix_name}.json'
 
     classification_models = {'jvgg19', 'jvgg21'}
 
@@ -621,12 +688,12 @@ def main(args):
 
             # Plot 1: Evaluations
             _ = plot_evaluations(result, dimensions=optimizing_names)
-            plt.savefig(os.path.join(plot_dir, f"evaluations_{args.model}.png"))
+            plt.savefig(os.path.join(plot_dir, f"evaluations_{args.model}_{args.prefix_name}.png"))
             plt.close()
 
             # Plot 2: Objective (partial dependence)
             _ = plot_objective(result, dimensions=optimizing_names)
-            plt.savefig(os.path.join(plot_dir, f"objective_{args.model}.png"))
+            plt.savefig(os.path.join(plot_dir, f"objective_{args.model}_{args.prefix_name}.png"))
             plt.close()
             print(f"Plots saved in '{plot_dir}/'")
         except ImportError:
@@ -635,7 +702,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description="Run Bayesian Optimization for segmentation or classification models."
     )
-    parser.add_argument('--n-calls', type=int, default=20, help="Number of Bayesian optimization calls (trials).")
+    parser.add_argument(
+        '--n-calls',
+        type=int,
+        default=20,
+        help="Number of Bayesian optimization calls (trials)."
+        )
     parser.add_argument(
         '--model',
         type=str,
@@ -650,7 +722,12 @@ if __name__ == '__main__':
                  'vgg21'],
         help="Model family to optimize.",
     )
-    parser.add_argument('--lr', type=float, default=None, help="Learning rate. If not set, it will be optimized.")
+    parser.add_argument(
+        '--lr',
+        type=float,
+        default=None,
+        help="Learning rate. If not set, it will be optimized."
+    )
     parser.add_argument(
         '--depth',
         type=int,
@@ -674,13 +751,17 @@ if __name__ == '__main__':
         type=int,
         default=None,
         help="Batch size. If not set, it will be optimized.",
-    )
-    parser.add_argument('--img-size', type=int, default=256, help="Size to resize input images to.")
+        )
+    parser.add_argument(
+        '--img-size',
+        type=int, default=256,
+        help="Size to resize input images to."
+        )
     parser.add_argument(
         '--gpu-mem-fraction',
         type=float,
         default=None,
-        help="Fraction of GPU memory to use (e.g., 0.8 for 80%). Only for CUDA devices.",
+        help="Fraction of GPU memory to use (e.g., 0.8 for 80 percent). Only for CUDA devices."
     )
     parser.add_argument(
         '--activation',
@@ -701,7 +782,11 @@ if __name__ == '__main__':
         default=10,
         help="Number of epochs to train per trial. A smaller number provides faster estimates.",
     )
-    parser.add_argument('--orth', action='store_true', help="Use JConv2dOrtho instead of standard JConv.")
+    parser.add_argument(
+        '--orth',
+        action='store_true',
+        help="Use JConv2dOrtho instead of standard JConv.",
+        )
     parser.add_argument(
         '--data-root',
         type=str,
@@ -735,7 +820,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--num-classes',
         type=int,
-        default=None,
+        default=3,
         help="Number of classes for classification. Inferred from dataset when not provided.",
     )
     parser.add_argument(
@@ -770,5 +855,35 @@ if __name__ == '__main__':
         default="accuracy",
         help="metric to maximize the bayesian Process. It only is avaliable to classification task."
     )
+    parser.add_argument(
+        '--prefix-name',
+        type=str,
+        default="",
+        help="Prefix name for saving results."
+    )
+    parser.add_argument(
+        "--wrapper-folder",
+        action='store_true',
+        help="Use YOLOSegDataset instead of dataset sub-pachages for semantic segmentation models."
+    )
+    parser.add_argument(
+        "--classes",
+        nargs='+',       # <--- ESTO crea la lista automáticamente
+        type=int,        # <--- Convierte cada elemento a Entero
+        default=None,
+        help="Lista de IDs de clases (ej: --classes 0 4 7)"
+    )
+    parser.add_argument(
+        "--add-background",
+        action='store_true',
+        help="Agregar clase de fondo al dataset."
+    )
+    parser.add_argument(
+        "--target-class-id",
+        type=int,
+        default=None,
+        help="ID de la clase objetivo para segmentación."
+        )
+
     args = parser.parse_args()
     main(args)

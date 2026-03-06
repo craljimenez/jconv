@@ -17,3 +17,5 @@ results
 run_experiments_unet_hybrid_v*
 logs_training*
 clscam_outputs*
+__*
+.*

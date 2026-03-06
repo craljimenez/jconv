@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
+from torchvision.transforms import v2
 from tqdm import tqdm
 import argparse
 import json
@@ -16,6 +17,7 @@ from dataset import (
     PetClassificationWrapper,
     FolderDatasetTransforms,
     FolderDatasetWrapper,
+    YOLOSegDataset
 )
 from utils import (
     build_unet,
@@ -31,14 +33,29 @@ from utils import (
     get_device,
 )
 
-def train_one_epoch_seg(model, loader, optimizer, loss_fn, device):
+def train_one_epoch_seg(model, loader, optimizer, loss_fn, device, wrapper_folder=False):
     """Runs a single training epoch."""
     model.train()
     loop = tqdm(loader, desc="Training")
     total_loss = 0.0
 
     for images, masks in loop:
-        images, masks = images.to(device), masks.to(device)
+        # 1. Mover a dispositivo (sin forzar tipo todavía)
+        images = images.to(device)
+        masks = masks.to(device)
+
+        # 2. Procesar Máscaras según el caso
+        if args.wrapper_folder:
+            # CASO A: Multicanal (Batch, 2, H, W) -> Convertir a Índices (Batch, H, W)
+            # CrossEntropy espera índices Long (Enteros) para clasificación estándar.
+            if masks.ndim == 4:
+                masks = torch.argmax(masks, dim=1)
+            masks = masks.long()
+        else:
+            # CASO B: Estándar (Batch, 1, H, W) o (Batch, H, W) -> Asegurar (Batch, H, W)
+            if masks.ndim == 4:
+                masks = masks.squeeze(1)
+            masks = masks.long()
 
         # Forward pass
         outputs = model(images)
@@ -55,23 +72,40 @@ def train_one_epoch_seg(model, loader, optimizer, loss_fn, device):
     return total_loss / len(loader)
 
 
-def evaluate_seg(model, loader, loss_fn, n_classes, device):
+def evaluate_seg(model, loader, loss_fn, n_classes, device, wrapper_folder=False): # <--- 1. Agregado el parametro
     """Evaluates the model on the validation set."""
     model.eval()
     total_loss = 0.0
-    total_dice = torch.zeros(n_classes, device=device)
-    total_iou = torch.zeros(n_classes, device=device)
+    
+    # Inicializadores seguros
+    total_dice = torch.zeros(n_classes, device=device) if n_classes > 1 else 0.0
+    total_iou = torch.zeros(n_classes, device=device) if n_classes > 1 else 0.0
     
     with torch.no_grad():
         loop = tqdm(loader, desc="Evaluating")
         for images, masks in loop:
-            images, masks = images.to(device), masks.to(device)
+            images = images.to(device)
+            masks = masks.to(device)
+
+            # --- 2. LÓGICA DE CORRECCIÓN (IGUAL QUE EN TRAINING) ---
+            if args.wrapper_folder:
+                # Si viene con canales extra (Batch, 2, H, W), colapsamos a indices (Batch, H, W)
+                # Esto arregla el error "only batches of spatial targets supported"
+                if masks.ndim == 4:
+                    masks = torch.argmax(masks, dim=1)
+                masks = masks.long() # CrossEntropy y Métricas necesitan Long
+            else:
+                # Caso estandar
+                if masks.ndim == 4:
+                    masks = masks.squeeze(1)
+                masks = masks.long()
+            # -------------------------------------------------------
 
             outputs = model(images)
             loss = loss_fn(outputs, masks)
             total_loss += loss.item()
 
-            # Calculate metrics
+            # Calculate metrics (Ya 'masks' son indices, así que funciona directo)
             total_dice += dice_score(outputs, masks, n_classes, device)
             total_iou += iou_score(outputs, masks, n_classes, device)
 
@@ -243,12 +277,50 @@ def main(args):
         class_names = dataset_classes if dataset_classes is not None else [str(i) for i in range(n_classes)]
         print(f"Number of classes: {n_classes}")
     else:
-        dataset_transforms = PetDatasetTransforms(size=args.img_size)
-        train_dataset = PetDatasetWrapper(root=args.data_root, split='trainval', transform=dataset_transforms, download=True)
-        val_dataset = PetDatasetWrapper(root=args.data_root, split='test', transform=dataset_transforms, download=True)
-        n_classes = 3  # 0: Background, 1: Pet, 2: Border
-        class_names = ['Background', 'Pet', 'Border']
 
+        if args.wrapper_folder:
+            train_transforms = v2.Compose([
+                # Redimensionar ambos
+                v2.Resize((args.img_size, args.img_size)),
+                
+                # Data Augmentation: Flip horizontal aleatorio (sincronizado)
+                # v2.RandomHorizontalFlip(p=0.5),
+                
+                # Data Augmentation: Rotación ligera (sincronizado)
+                # v2.RandomRotation(degrees=10),
+                
+                # Conversión de tipos FINAL:
+                # Convertimos la imagen a float32 y escalamos [0,1]
+                v2.ToDtype(torch.float32, scale=True),
+                # La máscara NO se escala (queremos IDs enteros 0, 1, 7...), solo se asegura que sea Long
+                # Nota: No usamos Normalize aquí para poder visualizar fácil, 
+                # pero deberías agregarlo para el entrenamiento real.
+            ])
+            train_dataset = YOLOSegDataset(
+                images_dir = os.path.join(args.data_root, 'train/images'),
+                labels_dir = os.path.join(args.data_root, 'train/labels'),
+                transform = train_transforms,
+                classes = args.classes,
+                add_background = args.add_background,
+                target_class_id = args.target_class_id 
+            )
+
+            val_dataset = YOLOSegDataset(
+                images_dir = os.path.join(args.data_root, 'valid/images'),
+                labels_dir = os.path.join(args.data_root, 'valid/labels'),
+                transform = train_transforms,
+                classes = args.classes,
+                add_background = args.add_background,
+                target_class_id = args.target_class_id 
+            )
+        else:
+            dataset_transforms = PetDatasetTransforms(size=args.img_size)
+            train_dataset = PetDatasetWrapper(root=args.data_root, split='trainval', transform=dataset_transforms, download=True)
+            val_dataset = PetDatasetWrapper(root=args.data_root, split='test', transform=dataset_transforms, download=True)
+        
+        n_classes = 2 if args.add_background else len(args.classes) if args.classes is not None else train_dataset.num_classes
+        class_names = args.classes if args.classes is not None else list(range(args.num_classes if args.num_classes is not None else n_classes))
+        
     
     pin_memory = device.type == 'cuda'
     train_loader = DataLoader(
@@ -355,7 +427,7 @@ def main(args):
     # --- 4. Training Loop ---
     best_val_metric = -1.0
     training_history = []
-    log_path = f"training_log_{args.model}.json"
+    log_path = f"training_log_{args.model}_{args.prefix_name}json"
     metric_label = args.metric_evaluating.title() if is_classification else "mIoU"
 
     for epoch in range(args.epochs):
@@ -422,7 +494,7 @@ def main(args):
         if current_metric > best_val_metric:
             best_val_metric = current_metric
             os.makedirs("models", exist_ok=True)
-            model_path = os.path.join("models", f"best_model_{args.model}.pth")
+            model_path = os.path.join("models", f"best_model_{args.model}_{args.prefix_name}.pth")
             torch.save(model.state_dict(), model_path)
             print(f"Validation {metric_label} improved. Saved model to {model_path}")
 
@@ -437,9 +509,9 @@ def main(args):
             "batch_size": args.batch_size,
             "num_workers": args.num_workers,
             "num_classes": n_classes,
-            "best_model_path": os.path.join("models", f"best_model_{args.model}.pth")
+            "best_model_path": os.path.join("models", f"best_model_{args.model}_{args.prefix_name}.pth")
         }
-        config_path = os.path.join("models", f"val_loader_config_{args.model}.json")
+        config_path = os.path.join("models", f"val_loader_config_{args.model}_{args.prefix_name}.json")
         with open(config_path, 'w') as f:
             json.dump(val_loader_config, f, indent=4)
         print(f"\nValidation loader configuration saved to {config_path}")
@@ -462,15 +534,34 @@ if __name__ == '__main__':
         default=None,
         help="Load hyperparameters from the JSON file for the specified model",
     )
-    parser.add_argument('--epochs', type=int, default=25, help="Number of training epochs.")
-    parser.add_argument('--batch-size', type=int, default=8, help="Batch size for training and evaluation.")
-    parser.add_argument('--lr', type=float, default=1e-4, help="Learning rate for the optimizer.")
-    parser.add_argument('--img-size', type=int, default=256, help="Size to resize input images to.")
+    parser.add_argument(
+        '--epochs',
+        type=int,
+        default=25,
+        help="Number of training epochs."
+        )
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=8,
+        help="Batch size for training and evaluation."
+        )
+    parser.add_argument(
+        '--lr',
+        type=float,
+        default=1e-4,
+        help="Learning rate for the optimizer.")
+    parser.add_argument(
+        '--img-size',
+        type=int,
+        default=256,
+        help="Size to resize input images to."
+        )
     parser.add_argument(
         '--gpu-mem-fraction',
         type=float,
         default=None,
-        help="Fraction of GPU memory to use (e.g., 0.8 for 80%). Only for CUDA devices.",
+        help="Fraction of GPU memory to use (e.g., 0.8 for 80 precentile). Only for CUDA devices.",
     )
     parser.add_argument('--depth', type=int, default=4, help="Model depth (or stages for FCN/UNet).")
     parser.add_argument(
@@ -570,5 +661,35 @@ if __name__ == '__main__':
         action='store_true',
         help="Save the configuration required to recreate the validation loader for future testing."
     )
+    parser.add_argument(
+        '--prefix-name',
+        type=str,
+        default="",
+        help="Prefix name for saving results."
+    )
+    parser.add_argument(
+        "--wrapper-folder",
+        action='store_true',
+        help="Use YOLOSegDataset instead of dataset sub-pachages for semantic segmentation models."
+    )
+    parser.add_argument(
+        "--classes",
+        nargs='+',       # <--- ESTO crea la lista automáticamente
+        type=int,        # <--- Convierte cada elemento a Entero
+        default=None,
+        help="Lista de IDs de clases (ej: --classes 0 4 7)"
+    )
+    parser.add_argument(
+        "--add-background",
+        action='store_true',
+        help="Agregar clase de fondo al dataset."
+    )
+    parser.add_argument(
+        "--target-class-id",
+        type=int,
+        default=None,
+        help="ID de la clase objetivo para segmentación."
+        )
+
     args = parser.parse_args()
     main(args)
